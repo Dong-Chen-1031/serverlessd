@@ -1,4 +1,4 @@
-use std::{cell::OnceCell, ffi::c_void, mem, ptr::NonNull, sync::Arc};
+use std::{cell::OnceCell, ffi::c_void, ptr::NonNull, sync::Arc};
 
 use reqwest::Client;
 use tokio_util::task::TaskTracker;

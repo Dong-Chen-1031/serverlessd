@@ -4,7 +4,7 @@ mod language;
 mod macros;
 mod runtime;
 
-use std::{fs, path::PathBuf, time::Duration};
+use std::{fs, path::PathBuf};
 
 use clap::Parser;
 
@@ -58,18 +58,23 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
 }
 
 async fn start_one(source: String, source_name: String) {
-    let mut serverless = Serverless::start_one();
-    let (pod_id, pod_worker_id) = serverless
+    let serverless = Serverless::new_one();
+    let platform = serverless.get_platform();
+
+    let (svl, handle) = serverless.start();
+
+    let (pod_id, pod_worker_id) = svl
         .create_worker(WorkerTask {
             source,
             source_name,
-            platform: serverless.get_platform(),
+            platform,
         })
         .await
-        .unwrap();
+        .expect("failed to create worker");
 
-    println!("created at {pod_id}:{pod_worker_id}");
+    tracing::info!("created worker at {}:{}", pod_id, pod_worker_id);
 
-    tokio::time::sleep(Duration::from_hours(100)).await;
-    serverless.halt().await;
+    if let Err(e) = handle.await {
+        tracing::error!(?e, "error while returning handle");
+    }
 }

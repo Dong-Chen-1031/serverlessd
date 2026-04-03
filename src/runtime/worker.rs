@@ -1,4 +1,4 @@
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::sync::mpsc;
 use v8::{Global, Local, Platform, Promise, SharedRef};
 
 use crate::{
@@ -16,18 +16,19 @@ pub enum WorkerTrigger {
 pub type WorkerTx = mpsc::Sender<WorkerTrigger>;
 type WorkerRx = mpsc::Receiver<WorkerTrigger>;
 
+/// A serverless worker.
 #[derive(Debug)]
+#[repr(transparent)]
 pub struct Worker {
     tx: WorkerTx,
-    handle: JoinHandle<Option<()>>,
 }
 
 impl Worker {
     #[inline]
     pub fn start(pod: &Pod, task: WorkerTask) -> Self {
         let (tx, rx) = mpsc::channel::<WorkerTrigger>(64);
-        let handle = pod.tasks.spawn_local(create_task(task, rx));
-        Self { tx, handle }
+        pod.tasks.spawn_local(create_task(task, rx));
+        Self { tx }
     }
 
     /// Trigger.
@@ -139,6 +140,8 @@ async fn create_task(task: WorkerTask, mut rx: WorkerRx) -> Option<()> {
             WorkerTrigger::Halt => break,
         }
     }
+
+    println!("cleaning up");
 
     // clean up
     {

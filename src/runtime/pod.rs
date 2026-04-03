@@ -1,6 +1,9 @@
-use std::{sync::Arc, thread};
+use std::sync::Arc;
 
-use tokio::sync::{RwLock, mpsc, oneshot};
+use tokio::{
+    sync::{RwLock, mpsc, oneshot},
+    task,
+};
 use tokio_util::task::TaskTracker;
 
 use crate::runtime::{Worker, WorkerTask, WorkerTrigger};
@@ -36,7 +39,7 @@ pub struct Pod {
 
 impl Pod {
     /// Spawn a dedicated thread for managing workers.
-    pub fn start(n_workers: usize) -> Arc<RwLock<Self>> {
+    pub fn start(n_workers: usize) -> (Arc<RwLock<Self>>, task::JoinHandle<()>) {
         let (tx, rx) = mpsc::channel::<PodTrigger>(64);
 
         let pod = Arc::new(RwLock::new(Self {
@@ -46,23 +49,23 @@ impl Pod {
             tx,
         }));
 
-        {
+        let handle = {
             let pod2 = pod.clone();
-            thread::spawn(|| {
+            task::spawn_blocking(|| {
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .expect("failed to create runtime");
                 let local = tokio::task::LocalSet::new();
                 rt.block_on(local.run_until(pod_task(pod2, rx)));
-            });
-        }
+            })
+        };
 
-        pod
+        (pod, handle)
     }
 
     #[inline(always)]
-    pub fn start_one() -> Arc<RwLock<Self>> {
+    pub fn start_one() -> (Arc<RwLock<Self>>, task::JoinHandle<()>) {
         Self::start(1)
     }
 
@@ -133,6 +136,7 @@ impl Pod {
     }
 }
 
+#[tracing::instrument(name = "pod_task", skip_all)]
 async fn pod_task(pod: Arc<RwLock<Pod>>, mut rx: PodRx) {
     while let Some(event) = rx.recv().await {
         match event {
