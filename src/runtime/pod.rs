@@ -18,6 +18,7 @@ pub enum PodTrigger {
         reply: oneshot::Sender<usize>,
     },
 
+    #[allow(unused)]
     ToWorker {
         id: usize,
         trigger: WorkerTrigger,
@@ -67,11 +68,6 @@ impl Pod {
     }
 
     #[inline(always)]
-    pub fn start_one() -> (PodHandle, task::JoinHandle<()>) {
-        Self::start(1)
-    }
-
-    #[inline(always)]
     pub const fn has_vacancy(&self) -> bool {
         !self.vacancies.is_empty() || self.workers.len() < self.workers.capacity()
     }
@@ -94,6 +90,7 @@ impl Pod {
         id
     }
 
+    #[allow(unused)]
     fn remove_worker(&mut self, id: usize) -> bool {
         if let Some(worker) = self.workers.get_mut(id) {
             let _ = unsafe { worker.take().unwrap_unchecked() };

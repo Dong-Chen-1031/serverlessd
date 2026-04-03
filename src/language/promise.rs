@@ -2,6 +2,7 @@ use std::hint;
 
 use v8::{Local, PinScope, PromiseState};
 
+#[allow(unused)]
 pub enum Promised<'s> {
     Resolved(Local<'s, v8::Value>),
     Rejected(Local<'s, v8::Value>),

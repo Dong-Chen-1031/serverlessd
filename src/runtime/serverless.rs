@@ -1,15 +1,10 @@
-use std::sync::Arc;
-
 use tokio::{
-    sync::{RwLock, mpsc, oneshot},
+    sync::{mpsc, oneshot},
     task::{self, JoinHandle},
 };
 use v8::{Platform, SharedRef};
 
-use crate::runtime::{
-    Pod, WorkerTask,
-    pod::{PodHandle, PodTrigger},
-};
+use crate::runtime::{Pod, WorkerTask, pod::PodHandle};
 
 #[derive(Debug)]
 pub enum ServerlessTrigger {
@@ -106,6 +101,7 @@ impl Serverless {
     }
 
     /// Stop a pod.
+    #[allow(unused)]
     async fn halt_pod(&mut self, id: usize) -> bool {
         if let Some(pod) = self.pods.get_mut(id) {
             pod.halt().await
