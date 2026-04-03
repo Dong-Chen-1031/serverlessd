@@ -1,4 +1,4 @@
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use v8::{Global, Local, Platform, Promise, SharedRef};
 
 use crate::{
@@ -10,7 +10,7 @@ use crate::{
 
 #[derive(Debug)]
 pub enum WorkerTrigger {
-    Halt,
+    Halt { token: oneshot::Sender<()> },
 }
 
 pub type WorkerTx = mpsc::Sender<WorkerTrigger>;
@@ -107,12 +107,12 @@ async fn create_task(task: WorkerTask, mut rx: WorkerRx) -> Option<()> {
         (Global::new(scope, module), Global::new(scope, promise))
     };
 
-    tracing::info!("resolving promise for worker init");
+    tracing::info!("resolving promise for worker env init");
 
     let isolate = unsafe { state.get_isolate() };
     while Platform::pump_message_loop(&state.platform, isolate, false) {}
 
-    tracing::info!("resolved promise for worker init");
+    tracing::info!("resolved promise for worker env init");
 
     scope_with_context!(
         isolate: isolate,
@@ -129,11 +129,11 @@ async fn create_task(task: WorkerTask, mut rx: WorkerRx) -> Option<()> {
             Promised::Rejected(value) => {
                 // usually we get an exception
                 let exception = ExceptionDetails::from_exception(scope, value)?;
-                println!("{:#?}", exception);
+                tracing::error!("failed to init worker env, reason: {:?}", exception);
                 return None;
             }
-            Promised::Resolved(value) => {
-                println!("{}", value.to_rust_string_lossy(scope));
+            Promised::Resolved(_) => {
+                tracing::info!("worker env initialized")
             }
         }
     }
@@ -143,16 +143,17 @@ async fn create_task(task: WorkerTask, mut rx: WorkerRx) -> Option<()> {
 
     while let Some(event) = rx.recv().await {
         match event {
-            WorkerTrigger::Halt => break,
+            WorkerTrigger::Halt { token } => {
+                // clean up
+                tracing::info!("worker clean up");
+                let state = WorkerState::open_from_isolate(scope);
+                state.wait_close().await;
+
+                token.send(()).ok();
+
+                break;
+            }
         }
-    }
-
-    println!("cleaning up");
-
-    // clean up
-    {
-        let state = WorkerState::open_from_isolate(scope);
-        state.wait_close().await;
     }
 
     Some(())

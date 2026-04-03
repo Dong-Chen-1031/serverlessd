@@ -6,7 +6,10 @@ use tokio::{
 };
 use v8::{Platform, SharedRef};
 
-use crate::runtime::{Pod, WorkerTask, pod::PodTrigger};
+use crate::runtime::{
+    Pod, WorkerTask,
+    pod::{PodHandle, PodTrigger},
+};
 
 #[derive(Debug)]
 pub enum ServerlessTrigger {
@@ -33,7 +36,7 @@ pub struct Serverless {
     // like, fucking 16 bytes
     // or whatever, if you're happy with it
     platform: SharedRef<Platform>,
-    pods: Vec<Arc<RwLock<Pod>>>,
+    pods: Vec<PodHandle>,
 
     n_threads: usize,
     n_workers: usize,
@@ -86,8 +89,7 @@ impl Serverless {
     #[inline]
     async fn find_vancancy(&self) -> Option<usize> {
         for (idx, pod) in self.pods.iter().enumerate() {
-            let pod = pod.read().await;
-            if pod.has_vacancy() {
+            if pod.has_vacancies().await {
                 return Some(idx);
             }
         }
@@ -97,7 +99,6 @@ impl Serverless {
     /// Stop all pods.
     async fn halt(&mut self) {
         for pod in self.pods.drain(..) {
-            let mut pod = pod.write().await;
             if !pod.halt().await {
                 tracing::error!("failed to halt");
             }
@@ -107,7 +108,6 @@ impl Serverless {
     /// Stop a pod.
     async fn halt_pod(&mut self, id: usize) -> bool {
         if let Some(pod) = self.pods.get_mut(id) {
-            let mut pod = pod.write().await;
             pod.halt().await
         } else {
             false
@@ -128,23 +128,7 @@ impl Serverless {
         let pod_id = self.find_vancancy().await?;
         let pod = unsafe { self.pods.get(pod_id).unwrap_unchecked() };
 
-        let receive = {
-            // NOTE:
-            // DO NOT remove this block!
-            // if you do, we're prone to dead locks.
-            //
-            // essentially, we trigger it, and immediately say fuh nawh,
-            // you can have the handle
-            // since the pod wants to create a worker within
-            let pod = pod.read().await;
-            let (reply, receive) = oneshot::channel::<usize>();
-            if !pod.trigger(PodTrigger::CreateWorker { task, reply }).await {
-                return None;
-            }
-            receive
-        };
-
-        let pod_worker_id = receive.await.ok()?;
+        let pod_worker_id = pod.create_worker(task).await?;
         Some((pod_id, pod_worker_id))
     }
 }

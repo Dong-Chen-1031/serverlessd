@@ -1,7 +1,5 @@
-use std::sync::Arc;
-
 use tokio::{
-    sync::{RwLock, mpsc, oneshot},
+    sync::{mpsc, oneshot},
     task,
 };
 use tokio_util::task::TaskTracker;
@@ -10,6 +8,10 @@ use crate::runtime::{Worker, WorkerTask, WorkerTrigger};
 
 #[derive(Debug)]
 pub enum PodTrigger {
+    CheckVacancies {
+        reply: oneshot::Sender<bool>,
+    },
+
     /// Create a new worker within the pod.
     CreateWorker {
         task: WorkerTask,
@@ -22,7 +24,9 @@ pub enum PodTrigger {
     },
 
     /// Stops the pod.
-    Halt,
+    Halt {
+        token: oneshot::Sender<()>,
+    },
 }
 
 pub type PodTx = mpsc::Sender<PodTrigger>;
@@ -33,39 +37,37 @@ type PodRx = mpsc::Receiver<PodTrigger>;
 pub struct Pod {
     workers: Vec<Option<Worker>>,
     vacancies: Vec<usize>,
-    tx: PodTx,
     pub(super) tasks: TaskTracker,
 }
 
 impl Pod {
     /// Spawn a dedicated thread for managing workers.
-    pub fn start(n_workers: usize) -> (Arc<RwLock<Self>>, task::JoinHandle<()>) {
+    pub fn start(n_workers: usize) -> (PodHandle, task::JoinHandle<()>) {
         let (tx, rx) = mpsc::channel::<PodTrigger>(64);
 
-        let pod = Arc::new(RwLock::new(Self {
+        let pod = Self {
             workers: Vec::with_capacity(n_workers),
             vacancies: Vec::with_capacity(n_workers),
             tasks: TaskTracker::new(),
-            tx,
-        }));
+        };
 
-        let handle = {
-            let pod2 = pod.clone();
+        let pod_handle = PodHandle::new(tx);
+        let join_handle = {
             task::spawn_blocking(|| {
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .expect("failed to create runtime");
                 let local = tokio::task::LocalSet::new();
-                rt.block_on(local.run_until(pod_task(pod2, rx)));
+                rt.block_on(local.run_until(pod_task(pod, rx)));
             })
         };
 
-        (pod, handle)
+        (pod_handle, join_handle)
     }
 
     #[inline(always)]
-    pub fn start_one() -> (Arc<RwLock<Self>>, task::JoinHandle<()>) {
+    pub fn start_one() -> (PodHandle, task::JoinHandle<()>) {
         Self::start(1)
     }
 
@@ -92,7 +94,7 @@ impl Pod {
         id
     }
 
-    pub fn remove_worker(&mut self, id: usize) -> bool {
+    fn remove_worker(&mut self, id: usize) -> bool {
         if let Some(worker) = self.workers.get_mut(id) {
             let _ = unsafe { worker.take().unwrap_unchecked() };
             self.vacancies.push(id);
@@ -104,7 +106,7 @@ impl Pod {
     }
 
     #[inline]
-    pub fn get_worker(&self, id: usize) -> Option<&Worker> {
+    fn get_worker(&self, id: usize) -> Option<&Worker> {
         if let Some(worker) = self.workers.get(id) {
             worker.as_ref()
         } else {
@@ -119,51 +121,96 @@ impl Pod {
         let worker = Worker::start(self, task);
         self.put_worker(worker)
     }
+}
+
+#[repr(transparent)]
+pub struct PodHandle {
+    tx: PodTx,
+}
+
+impl PodHandle {
+    #[inline(always)]
+    pub fn new(tx: PodTx) -> Self {
+        Self { tx }
+    }
+
+    /// Stop the pod task.
+    ///
+    /// Returns `false` if failed.
+    #[must_use]
+    pub async fn halt(&self) -> bool {
+        let (token, recv) = oneshot::channel();
+
+        tracing::info!("waiting for pod...");
+        if !self.tx.send(PodTrigger::Halt { token }).await.is_ok() {
+            return false;
+        }
+
+        recv.await.is_ok()
+    }
+
+    pub async fn has_vacancies(&self) -> bool {
+        let (reply, recv) = oneshot::channel();
+        if !self.trigger(PodTrigger::CheckVacancies { reply }).await {
+            return false;
+        }
+
+        recv.await.ok().unwrap_or(false)
+    }
+
+    /// Create a worker. Returns `Some(worker_id)` if successful.
+    pub async fn create_worker(&self, task: WorkerTask) -> Option<usize> {
+        let (reply, receive) = oneshot::channel::<usize>();
+        if !self.trigger(PodTrigger::CreateWorker { task, reply }).await {
+            return None;
+        }
+
+        receive.await.ok()
+    }
 
     #[inline(always)]
     #[must_use]
     pub async fn trigger(&self, trigger: PodTrigger) -> bool {
         self.tx.send(trigger).await.is_ok()
     }
-
-    /// Stop the pod task.
-    ///
-    /// Requires explicit access.
-    #[inline(always)]
-    #[must_use]
-    pub async fn halt(&mut self) -> bool {
-        self.tx.send(PodTrigger::Halt).await.is_ok()
-    }
 }
 
 #[tracing::instrument(name = "pod_task", skip_all)]
-async fn pod_task(pod: Arc<RwLock<Pod>>, mut rx: PodRx) {
+async fn pod_task(mut pod: Pod, mut rx: PodRx) {
     while let Some(event) = rx.recv().await {
         match event {
+            PodTrigger::CheckVacancies { reply } => {
+                reply.send(pod.has_vacancy()).ok();
+            }
+
             PodTrigger::CreateWorker { task, reply } => {
-                let mut pod = pod.write().await;
                 let id = pod.create_worker(task);
                 reply.send(id).ok();
             }
 
             PodTrigger::ToWorker { id, trigger } => {
-                let pod = pod.read().await;
                 if let Some(worker) = pod.get_worker(id) {
                     let _ = worker.trigger(trigger).await;
                 }
             }
 
-            PodTrigger::Halt => {
-                // we need to hold the explicit &mut
-                // otherwise other instances might still
-                // want to find empty workers to use, which is bad
-                let mut pod = pod.write().await;
+            PodTrigger::Halt { token } => {
+                tracing::info!("got halt");
+
                 for worker in pod.workers.drain(..) {
+                    tracing::info!("closing worker lmfao");
+
+                    let (wtoken, recv) = oneshot::channel();
+
                     if let Some(worker) = worker {
-                        let _ = worker.trigger(WorkerTrigger::Halt).await;
+                        let _ = worker.trigger(WorkerTrigger::Halt { token: wtoken }).await;
                     }
+
+                    recv.await.ok();
                 }
 
+                tracing::info!("ok bye");
+                token.send(()).ok();
                 break;
             }
         }
