@@ -4,7 +4,12 @@ mod language;
 mod macros;
 mod runtime;
 
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+    str::FromStr,
+};
 
 use clap::Parser;
 
@@ -33,6 +38,12 @@ enum Command {
 struct OneArgs {
     /// The source file.
     file: PathBuf,
+
+    #[arg(long, required = false)]
+    port: Option<u16>,
+
+    #[arg(long, required = false)]
+    host: Option<String>,
 }
 
 fn main() -> Result<(), Box<dyn core::error::Error>> {
@@ -53,20 +64,28 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
             let source = fs::read_to_string(&args.file)?;
             let source_name = args.file.to_string_lossy().into_owned();
 
-            rt.block_on(start_one(source, source_name));
+            rt.block_on(start_one(
+                source,
+                source_name,
+                SocketAddr::new(
+                    IpAddr::from_str(&args.host.as_ref().map(|k| &**k).unwrap_or("127.0.0.1"))
+                        .expect("failed to parse ip addr"),
+                    args.port.unwrap_or(3000),
+                ),
+            ));
         }
     }
 
     Ok(())
 }
 
-async fn start_one(source: String, source_name: String) {
+async fn start_one(source: String, source_name: String, addr: SocketAddr) {
     tracing::info!(target: "(one)", "creating runtime");
 
     let serverless = Serverless::new_one();
     let platform = serverless.get_platform();
 
-    let (svl, handle) = serverless.start();
+    let (svl, handle) = serverless.start(addr);
 
     let (pod_id, pod_worker_id) = svl
         .create_worker(WorkerTask {

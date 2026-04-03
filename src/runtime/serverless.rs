@@ -1,16 +1,28 @@
+use std::net::SocketAddr;
+
+use hyper_util::rt::TokioIo;
 use tokio::{
+    net::TcpListener,
     sync::{mpsc, oneshot},
     task::{self, JoinHandle},
 };
 use v8::{Platform, SharedRef};
 
-use crate::runtime::{Pod, WorkerTask, pod::PodHandle};
+use crate::runtime::{
+    Pod, WorkerTask, WorkerTrigger,
+    pod::{PodHandle, PodTrigger},
+};
 
 #[derive(Debug)]
 pub enum ServerlessTrigger {
     CreateWorker {
         task: WorkerTask,
         reply: oneshot::Sender<Option<(usize, usize)>>,
+    },
+
+    ToPod {
+        id: usize,
+        trigger: PodTrigger,
     },
 }
 
@@ -68,9 +80,9 @@ impl Serverless {
     /// Starts the serverless runtime.
     #[inline]
     #[must_use]
-    pub fn start(self) -> (ServerlessHandle, JoinHandle<()>) {
+    pub fn start(self, addr: SocketAddr) -> (ServerlessHandle, JoinHandle<()>) {
         let (tx, rx) = mpsc::channel(512);
-        let handle = task::spawn(serverless_task(self, rx));
+        let handle = task::spawn(serverless_task(self, rx, addr));
 
         (ServerlessHandle::new(tx), handle)
     }
@@ -154,9 +166,22 @@ impl ServerlessHandle {
 
         result
     }
+
+    /// Helper for triggering worker.
+    pub async fn trigger_worker(&self, pod_id: usize, worker_id: usize, trigger: WorkerTrigger) {
+        self.tx
+            .send(ServerlessTrigger::ToPod {
+                id: pod_id,
+                trigger: PodTrigger::ToWorker {
+                    id: worker_id,
+                    trigger,
+                },
+            })
+            .await;
+    }
 }
 
-async fn serverless_task(mut serverless: Serverless, mut rx: ServerlessRx) {
+async fn serverless_task(mut serverless: Serverless, mut rx: ServerlessRx, addr: SocketAddr) {
     // now, we gotta start those threads
     // i know, this might be a bit not so memory efficient
     let mut handles = Vec::with_capacity(serverless.n_threads);
@@ -166,32 +191,50 @@ async fn serverless_task(mut serverless: Serverless, mut rx: ServerlessRx) {
         handles.push(handle);
     }
 
+    // cancel handling, this is super important
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
+
+    let Ok(listener) = TcpListener::bind(addr).await else {
+        tracing::info!("failed to create tcp listener, exiting");
+        close_serverless(serverless, handles).await;
+        return;
+    };
 
     loop {
         tokio::select! {
             _ = &mut ctrl_c => {
-                tracing::info!("sending halt to all pods...");
-                serverless.halt().await;
-                tracing::info!("breaking main loop");
+                close_serverless(serverless, handles).await;
                 break;
             },
 
-            result = rx.recv() => {
-                match result {
+            trigger_result = rx.recv() => {
+                match trigger_result {
                     Some(trigger) => {
                         match trigger {
                             ServerlessTrigger::CreateWorker { task, reply } => {
                                 reply.send(serverless.create_worker(task).await).ok();
+                            }
+                            ServerlessTrigger::ToPod { id, trigger } => {
+                                unimplemented!()
                             }
                         }
                     },
                     None => break, // sender dropped, shut down
                 }
             },
+
+            Ok((stream, _)) = listener.accept() => {
+                let _io = TokioIo::new(stream);
+                tracing::info!("got http connection!");
+            }
         }
     }
+}
+
+async fn close_serverless(mut serverless: Serverless, handles: Vec<JoinHandle<()>>) {
+    tracing::info!("sending halt to all pods...");
+    serverless.halt().await;
 
     tracing::info!("joining pods...");
 

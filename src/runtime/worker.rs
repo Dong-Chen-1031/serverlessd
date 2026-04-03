@@ -1,5 +1,5 @@
 use tokio::sync::{mpsc, oneshot};
-use v8::{Global, Local, Platform, Promise, SharedRef};
+use v8::{Global, Isolate, Local, Platform, Promise, SharedRef};
 
 use crate::{
     compile, intrinsics,
@@ -10,6 +10,7 @@ use crate::{
 
 #[derive(Debug)]
 pub enum WorkerTrigger {
+    Http {},
     Halt { token: oneshot::Sender<()> },
 }
 
@@ -139,22 +140,37 @@ async fn create_task(task: WorkerTask, mut rx: WorkerRx) -> Option<()> {
     }
 
     let namespace = module.get_module_namespace().cast::<v8::Object>();
-    let _entrypoint = namespace.get(scope, v8::String::new(scope, "default")?.cast())?;
+    let entrypoint = namespace.get(scope, v8::String::new(scope, "default")?.cast())?;
+
+    if !entrypoint.is_object() || entrypoint.is_null_or_undefined() {
+        tracing::error!("error while getting worker entrypoint");
+        close_state(scope).await;
+        return None;
+    }
 
     while let Some(event) = rx.recv().await {
         match event {
             WorkerTrigger::Halt { token } => {
                 // clean up
                 tracing::info!("worker clean up");
-                let state = WorkerState::open_from_isolate(scope);
-                state.wait_close().await;
+
+                close_state(scope).await;
 
                 token.send(()).ok();
 
                 break;
             }
+
+            WorkerTrigger::Http {} => {}
         }
     }
 
     Some(())
+}
+
+/// Gracefully closes the worker state, releasing memory.
+#[inline]
+async fn close_state(scope: &Isolate) {
+    let state = WorkerState::open_from_isolate(scope);
+    state.wait_close().await;
 }

@@ -1,1 +1,7 @@
-export const result = fetch("https://github.com/AWeirdDev.png");
+export default {
+  async fetch() {
+    fetch("https://example.com", {
+      method: "GET",
+    });
+  },
+};

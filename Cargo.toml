@@ -11,10 +11,10 @@ tokio = { version = "1", features = ["full"] }
 v8 = "147.0.0"
 reqwest = { version = "0.13", features = ["json"] }
 tokio-util = { version = "0.7.18", features = ["rt"] }
-
-[dev-dependencies]
 hyper = { version = "1", features = ["full"] }
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["full"] }
 url = "2.5.8"
+
+[dev-dependencies]
 pnet = "0.35.0"
