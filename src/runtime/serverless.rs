@@ -172,8 +172,9 @@ async fn serverless_task(mut serverless: Serverless, mut rx: ServerlessRx) {
     loop {
         tokio::select! {
             _ = &mut ctrl_c => {
-                tracing::info!("sent halt");
+                tracing::info!("sending halt to all pods...");
                 serverless.halt().await;
+                tracing::info!("breaking main loop");
                 break;
             },
 
@@ -192,11 +193,12 @@ async fn serverless_task(mut serverless: Serverless, mut rx: ServerlessRx) {
         }
     }
 
-    tracing::info!("shutting down pods...");
+    tracing::info!("joining pods...");
 
     // signal pods to stop here, then join
     for handle in handles {
-        handle.abort();
         handle.await.ok();
     }
+
+    tracing::info!("exit");
 }

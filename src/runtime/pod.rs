@@ -138,8 +138,9 @@ impl PodHandle {
     pub async fn halt(&self) -> bool {
         let (token, recv) = oneshot::channel();
 
-        tracing::info!("waiting for pod...");
+        tracing::info!("waiting for pod to halt...");
         if !self.tx.send(PodTrigger::Halt { token }).await.is_ok() {
+            tracing::error!("failed to halt pod");
             return false;
         }
 
@@ -192,10 +193,8 @@ async fn pod_task(mut pod: Pod, mut rx: PodRx) {
             }
 
             PodTrigger::Halt { token } => {
-                tracing::info!("got halt");
-
                 for worker in pod.workers.drain(..) {
-                    tracing::info!("closing worker lmfao");
+                    tracing::info!("closing workers in this pod...");
 
                     let (wtoken, recv) = oneshot::channel();
 
@@ -206,7 +205,7 @@ async fn pod_task(mut pod: Pod, mut rx: PodRx) {
                     recv.await.ok();
                 }
 
-                tracing::info!("ok bye");
+                tracing::info!("all workers closed in this pod");
                 token.send(()).ok();
                 break;
             }
