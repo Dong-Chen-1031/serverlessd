@@ -1,10 +1,13 @@
+use std::cell::{Cell, RefCell};
+
 use tokio::{
     sync::{mpsc, oneshot},
     task,
 };
 use tokio_util::task::TaskTracker;
+use v8::IsolateHandle;
 
-use crate::runtime::{Worker, WorkerTask, WorkerTrigger};
+use crate::runtime::{Worker, WorkerTask, WorkerTrigger, monitor::Monitor};
 
 #[derive(Debug)]
 pub enum PodTrigger {
@@ -34,10 +37,10 @@ pub type PodTx = mpsc::Sender<PodTrigger>;
 type PodRx = mpsc::Receiver<PodTrigger>;
 
 /// A thread containing multiple workers.
-#[derive(Debug)]
 pub struct Pod {
     workers: Vec<Option<Worker>>,
     vacancies: Vec<usize>,
+    pub(super) monitor: Cell<Monitor>,
     pub(super) tasks: TaskTracker,
 }
 
@@ -50,6 +53,7 @@ impl Pod {
             workers: Vec::with_capacity(n_workers),
             vacancies: Vec::with_capacity(n_workers),
             tasks: TaskTracker::new(),
+            monitor: Cell::new(Monitor::new(n_workers)),
         };
 
         let pod_handle = PodHandle::new(tx);
@@ -72,22 +76,18 @@ impl Pod {
         !self.vacancies.is_empty() || self.workers.len() < self.workers.capacity()
     }
 
-    /// Find vacancies (or create a new one), then put the
-    /// worker instance there.
-    pub fn put_worker(&mut self, worker: Worker) -> usize {
-        // we'll get a id
-        let id = {
-            self.vacancies.pop().unwrap_or({
-                let ln = self.workers.len();
-                self.workers.push(None);
-                ln
-            })
-        };
+    pub fn get_next_worker_id(&mut self) -> usize {
+        self.vacancies.pop().unwrap_or({
+            let ln = self.workers.len();
+            self.workers.push(None);
+            ln
+        })
+    }
+
+    pub fn put_worker(&mut self, id: usize, worker: Worker) {
         unsafe {
             self.workers.get_mut(id).unwrap_unchecked().replace(worker);
         }
-
-        id
     }
 
     #[allow(unused)]
@@ -115,8 +115,11 @@ impl Pod {
     #[inline]
     #[must_use]
     fn create_worker(&mut self, task: WorkerTask) -> usize {
-        let worker = Worker::start(self, task);
-        self.put_worker(worker)
+        let id = self.get_next_worker_id();
+        let worker = Worker::start(self, task, id);
+        self.put_worker(id, worker);
+
+        id
     }
 }
 

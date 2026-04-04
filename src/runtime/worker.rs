@@ -1,14 +1,17 @@
+use std::ptr::null_mut;
+
 use tokio::sync::{mpsc, oneshot};
 use v8::{Global, Isolate, Local, Platform, Promise, SharedRef};
 
 use crate::{
     compile, intrinsics,
     language::{ExceptionDetails, Promised},
-    runtime::{Pod, state::WorkerState},
+    runtime::{Pod, monitor::Monitor, state::WorkerState},
     scope_with_context,
 };
 
 #[derive(Debug)]
+#[allow(unused)]
 pub enum WorkerTrigger {
     Http {},
     Halt { token: oneshot::Sender<()> },
@@ -26,9 +29,14 @@ pub struct Worker {
 
 impl Worker {
     #[inline]
-    pub fn start(pod: &Pod, task: WorkerTask) -> Self {
+    pub fn start(pod: &Pod, task: WorkerTask, worker_id: usize) -> Self {
         let (tx, rx) = mpsc::channel::<WorkerTrigger>(64);
-        pod.tasks.spawn_local(create_task(task, rx));
+
+        // safety: we're in a single-threaded environment
+        let monitor_ptr = pod.monitor.as_ptr();
+
+        pod.tasks
+            .spawn_local(create_task(task, rx, worker_id, monitor_ptr));
         Self { tx }
     }
 
@@ -68,7 +76,7 @@ pub struct WorkerTask {
 }
 
 #[tracing::instrument(skip_all)]
-async fn create_task(task: WorkerTask, mut rx: WorkerRx) -> Option<()> {
+async fn create_task(task: WorkerTask, mut rx: WorkerRx, worker_id: usize, monitor: *mut Monitor) {
     let WorkerTask {
         source,
         source_name,
@@ -76,9 +84,25 @@ async fn create_task(task: WorkerTask, mut rx: WorkerRx) -> Option<()> {
     } = task;
 
     let isolate = Box::new(v8::Isolate::new(Default::default()));
+    let monitoring = {
+        let mn = unsafe { &mut *monitor };
+        mn.put(isolate.thread_safe_handle(), worker_id)
+    };
+
     let state = WorkerState::new_injected(platform, isolate);
 
+    macro_rules! some {
+        ($scope:expr, $k:expr) => {{
+            let Some(m) = $k else {
+                close_state($scope).await;
+                return;
+            };
+            m
+        }};
+    }
+
     tracing::info!("initializing environment for worker");
+
     // environment initialization
     let (module, promise) = {
         scope_with_context!(
@@ -96,10 +120,13 @@ async fn create_task(task: WorkerTask, mut rx: WorkerRx) -> Option<()> {
         }
 
         let module = compile::compile_module(scope, source, source_name);
+
+        // instantiate imports, etc.
         module
             .instantiate_module(scope, compile::resolve_module_callback)
             .expect("instantiation failed");
 
+        // instantiate evaluations
         let promise = module
             .evaluate(scope)
             .expect("failed to evaluate")
@@ -129,9 +156,9 @@ async fn create_task(task: WorkerTask, mut rx: WorkerRx) -> Option<()> {
         match promised {
             Promised::Rejected(value) => {
                 // usually we get an exception
-                let exception = ExceptionDetails::from_exception(scope, value)?;
+                let exception = some!(scope, ExceptionDetails::from_exception(scope, value));
                 tracing::error!("failed to init worker env, reason: {:?}", exception);
-                return None;
+                return;
             }
             Promised::Resolved(_) => {
                 tracing::info!("worker env initialized")
@@ -140,12 +167,18 @@ async fn create_task(task: WorkerTask, mut rx: WorkerRx) -> Option<()> {
     }
 
     let namespace = module.get_module_namespace().cast::<v8::Object>();
-    let entrypoint = namespace.get(scope, v8::String::new(scope, "default")?.cast())?;
+    let entrypoint = some!(
+        scope,
+        namespace.get(
+            scope,
+            some!(scope, v8::String::new(scope, "default")).cast(),
+        )
+    );
 
     if !entrypoint.is_object() || entrypoint.is_null_or_undefined() {
         tracing::error!("error while getting worker entrypoint");
         close_state(scope).await;
-        return None;
+        return;
     }
 
     while let Some(event) = rx.recv().await {
@@ -166,13 +199,12 @@ async fn create_task(task: WorkerTask, mut rx: WorkerRx) -> Option<()> {
             WorkerTrigger::Http {} => {}
         }
     }
-
-    Some(())
 }
 
 /// Gracefully closes the worker state, releasing memory.
 #[inline]
-async fn close_state(scope: &Isolate) {
+async fn close_state(scope: &mut Isolate) {
     let state = WorkerState::open_from_isolate(scope);
     state.wait_close().await;
+    scope.set_data(0, null_mut() as *mut _);
 }

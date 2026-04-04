@@ -15,7 +15,6 @@ hyper = { version = "1", features = ["full"] }
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["full"] }
 url = "2.5.8"
-libc = "0.2.184"
 
 [dev-dependencies]
 pnet = "0.35.0"
