@@ -1,6 +1,8 @@
 use tokio::sync::{mpsc, oneshot};
 use v8::{Global, Isolate, Local, Platform, Promise, SharedRef};
 
+use cpu_time::ProcessTime;
+
 use crate::{
     compile, intrinsics,
     language::{ExceptionDetails, Promised},

@@ -201,6 +201,8 @@ async fn serverless_task(mut serverless: Serverless, mut rx: ServerlessRx, addr:
         return;
     };
 
+    println!("======> server started at {addr}");
+
     loop {
         tokio::select! {
             _ = &mut ctrl_c => {
