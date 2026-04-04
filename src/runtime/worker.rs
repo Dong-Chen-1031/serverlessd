@@ -1,8 +1,6 @@
 use tokio::sync::{mpsc, oneshot};
 use v8::{Global, Isolate, Local, Platform, Promise, SharedRef};
 
-use cpu_time::ProcessTime;
-
 use crate::{
     compile, intrinsics,
     language::{ExceptionDetails, Promised},
@@ -151,6 +149,8 @@ async fn create_task(task: WorkerTask, mut rx: WorkerRx) -> Option<()> {
     }
 
     while let Some(event) = rx.recv().await {
+        scope.perform_microtask_checkpoint();
+
         match event {
             WorkerTrigger::Halt { token } => {
                 // clean up
