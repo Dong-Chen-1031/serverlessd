@@ -18,6 +18,15 @@ pub enum ServerlessTrigger {
         name: String,
     },
 
+    UploadWorkerCode {
+        name: String,
+        code: String,
+    },
+
+    RemoveWorkerCode {
+        name: String,
+    },
+
     ToPod {
         id: usize,
         trigger: PodTrigger,

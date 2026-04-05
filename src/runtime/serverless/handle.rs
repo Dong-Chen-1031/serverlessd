@@ -1,7 +1,7 @@
 use tokio::sync::oneshot;
 
 use crate::runtime::{
-    PodTrigger, WorkerTask, WorkerTrigger,
+    WorkerTask,
     serverless::trigger::{ServerlessTrigger, ServerlessTx},
 };
 
@@ -31,22 +31,9 @@ impl ServerlessHandle {
         result
     }
 
-    /// Helper for triggering worker.
-    pub async fn trigger_worker(
-        &self,
-        pod_id: usize,
-        worker_id: usize,
-        trigger: WorkerTrigger,
-    ) -> Option<()> {
-        self.tx
-            .send(ServerlessTrigger::ToPod {
-                id: pod_id,
-                trigger: PodTrigger::ToWorker {
-                    id: worker_id,
-                    trigger,
-                },
-            })
-            .await
-            .ok()
+    /// Trigger the serverless runtime.
+    #[inline]
+    pub async fn trigger(&self, trigger: ServerlessTrigger) -> Option<()> {
+        self.tx.send(trigger).await.ok()
     }
 }

@@ -1,6 +1,5 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
-use matchit::Router;
 use tokio::{
     sync::mpsc,
     task::{self, JoinHandle},
@@ -9,40 +8,8 @@ use v8::{Platform, SharedRef};
 
 use crate::runtime::{
     PodHandle, WorkerTask,
-    serverless::{handle::ServerlessHandle, task::serverless_task},
+    serverless::{app_service::AppState, handle::ServerlessHandle, task::serverless_task},
 };
-
-pub(super) struct AppState {
-    pub(super) router: Router<AppPath>,
-    pub(super) serverless: ServerlessHandle,
-}
-
-impl AppState {
-    pub(super) fn new(serverless: ServerlessHandle) -> Self {
-        let mut router = Router::new();
-        router
-            .insert("/_/{operation}", AppPath::Api)
-            .expect("failed to build app router");
-        router
-            .insert("/{worker}", AppPath::Worker)
-            .expect("failed to build app router");
-        router
-            .insert("/{worker}/{*segments}", AppPath::Worker)
-            .expect("failed to build app router");
-
-        Self { router, serverless }
-    }
-}
-
-pub(super) enum AppPath {
-    Api,
-    Worker,
-}
-
-pub(super) enum AppEvent {
-    Worker(),
-    Get { universal_worker_name: String },
-}
 
 /// The serverless runtime.
 ///
@@ -58,6 +25,7 @@ pub struct Serverless {
     pub(super) n_workers: usize,
 
     pub(super) mapping: HashMap<String, (usize, usize)>,
+    pub(super) uploads: HashMap<String, String>,
 
     // why the fuck is this super fucking big???
     // like, fucking 16 bytes
@@ -84,6 +52,7 @@ impl Serverless {
             n_threads,
             n_workers,
             mapping: HashMap::with_capacity(n_threads * n_workers),
+            uploads: HashMap::with_capacity(n_threads * n_workers), // minimum capacity
             platform,
             pods,
         }
@@ -172,5 +141,15 @@ impl Serverless {
     #[inline(always)]
     pub(super) fn remove_universal_worker_name(&mut self, name: &str) -> Option<(usize, usize)> {
         self.mapping.remove(name)
+    }
+
+    #[inline(always)]
+    pub(super) fn upload_worker_code(&mut self, name: String, code: String) {
+        self.uploads.insert(name, code);
+    }
+
+    #[inline(always)]
+    pub(super) fn remove_worker_code(&mut self, name: &str) {
+        self.uploads.remove(name);
     }
 }

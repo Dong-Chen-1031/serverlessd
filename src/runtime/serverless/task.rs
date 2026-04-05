@@ -10,8 +10,8 @@ use tokio::{net::TcpListener, task::JoinHandle};
 use crate::runtime::{
     Pod,
     serverless::{
-        core::{AppState, Serverless},
-        service::service_handler,
+        app_service::{AppState, service_handler},
+        core::Serverless,
         trigger::{ServerlessRx, ServerlessTrigger},
     },
 };
@@ -67,6 +67,14 @@ pub(super) async fn serverless_task(
 
                             ServerlessTrigger::RemoveUniversalWorkerName { name } => {
                                 serverless.remove_universal_worker_name(&name);
+                            }
+
+                            ServerlessTrigger::UploadWorkerCode { name, code } => {
+                                serverless.upload_worker_code(name, code);
+                            }
+
+                            ServerlessTrigger::RemoveWorkerCode { name } => {
+                                serverless.remove_worker_code(&name);
                             }
                         }
                     },
