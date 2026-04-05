@@ -1,11 +1,17 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 
-use tokio::{io::AsyncWriteExt, net::TcpListener, sync::oneshot, task::JoinHandle};
+use hyper::service::service_fn;
+use hyper_util::{
+    rt::{TokioExecutor, TokioIo},
+    server::conn::auto,
+};
+use tokio::{net::TcpListener, task::JoinHandle};
 
 use crate::runtime::{
-    Pod, PodTrigger, WorkerTrigger,
+    Pod,
     serverless::{
-        core::Serverless,
+        core::{AppState, Serverless},
+        service::service_handler,
         trigger::{ServerlessRx, ServerlessTrigger},
     },
 };
@@ -13,6 +19,7 @@ use crate::runtime::{
 pub(super) async fn serverless_task(
     mut serverless: Serverless,
     mut rx: ServerlessRx,
+    app_state: Arc<AppState>,
     addr: SocketAddr,
 ) {
     // now, we gotta start those threads
@@ -50,8 +57,16 @@ pub(super) async fn serverless_task(
                             ServerlessTrigger::CreateWorker { task, reply } => {
                                 reply.send(serverless.create_worker(task).await).ok();
                             }
-                            ServerlessTrigger::ToPod { id, trigger } => {
+                            ServerlessTrigger::ToPod { id: _, trigger: _ } => {
                                 unimplemented!()
+                            }
+
+                            ServerlessTrigger::SetUniversalWorkerName { name, locator } => {
+                                serverless.set_universal_worker_name(name, locator);
+                            }
+
+                            ServerlessTrigger::RemoveUniversalWorkerName { name } => {
+                                serverless.remove_universal_worker_name(&name);
                             }
                         }
                     },
@@ -59,18 +74,21 @@ pub(super) async fn serverless_task(
                 }
             },
 
-            Ok((mut stream, _)) = listener.accept() => {
-                let pod = serverless.get_pod(0).unwrap();
-                let (reply, _) = oneshot::channel();
+            Ok((stream, _)) = listener.accept() => {
+                let io = TokioIo::new(stream);
+                let app_state1 = app_state.clone();
+                tokio::task::spawn(async move {
+                    let app_state2 = app_state1;
+                    if let Err(err) = auto::Builder::new(TokioExecutor::new())
+                        .serve_connection(io, service_fn(move |req| {
+                                service_handler(app_state2.clone(), req)
 
-                let _ = pod.trigger(PodTrigger::ToWorker { id: 0, trigger: WorkerTrigger::Http { reply } }).await;
-
-
-                let (_, mut writer) = stream.split();
-                writer.write(b"hello, world!").await.ok();
-
-
-                tracing::info!("got http connection!");
+                        }))
+                        .await
+                    {
+                        tracing::error!("error serving connection: {:#?}", err);
+                    }
+                });
             }
         }
     }

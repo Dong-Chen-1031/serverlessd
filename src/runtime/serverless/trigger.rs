@@ -9,6 +9,15 @@ pub enum ServerlessTrigger {
         reply: oneshot::Sender<Option<(usize, usize)>>,
     },
 
+    SetUniversalWorkerName {
+        name: String,
+        locator: (usize, usize),
+    },
+
+    RemoveUniversalWorkerName {
+        name: String,
+    },
+
     ToPod {
         id: usize,
         trigger: PodTrigger,

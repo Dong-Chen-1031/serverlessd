@@ -1,5 +1,6 @@
-use std::net::SocketAddr;
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
+use matchit::Router;
 use tokio::{
     sync::mpsc,
     task::{self, JoinHandle},
@@ -11,24 +12,58 @@ use crate::runtime::{
     serverless::{handle::ServerlessHandle, task::serverless_task},
 };
 
+pub(super) struct AppState {
+    pub(super) router: Router<AppPath>,
+    pub(super) serverless: ServerlessHandle,
+}
+
+impl AppState {
+    pub(super) fn new(serverless: ServerlessHandle) -> Self {
+        let mut router = Router::new();
+        router
+            .insert("/_/{operation}", AppPath::Api)
+            .expect("failed to build app router");
+        router
+            .insert("/{worker}", AppPath::Worker)
+            .expect("failed to build app router");
+        router
+            .insert("/{worker}/{*segments}", AppPath::Worker)
+            .expect("failed to build app router");
+
+        Self { router, serverless }
+    }
+}
+
+pub(super) enum AppPath {
+    Api,
+    Worker,
+}
+
+pub(super) enum AppEvent {
+    Worker(),
+    Get { universal_worker_name: String },
+}
+
 /// The serverless runtime.
 ///
 /// Example:
 /// ```rs
-/// let serverless = Serverless::start(
+/// let serverless = Serverless::new(
 ///     10, // the number of threads you need
 ///     10, // the number of workers per thread
 /// )
 /// ```
 pub struct Serverless {
+    pub(super) n_threads: usize,
+    pub(super) n_workers: usize,
+
+    pub(super) mapping: HashMap<String, (usize, usize)>,
+
     // why the fuck is this super fucking big???
     // like, fucking 16 bytes
     // or whatever, if you're happy with it
     pub(super) platform: SharedRef<Platform>,
     pub(super) pods: Vec<PodHandle>,
-
-    pub(super) n_threads: usize,
-    pub(super) n_workers: usize,
 }
 
 impl Serverless {
@@ -46,10 +81,11 @@ impl Serverless {
         let pods = Vec::with_capacity(n_threads);
 
         Self {
-            platform,
-            pods,
             n_threads,
             n_workers,
+            mapping: HashMap::with_capacity(n_threads * n_workers),
+            platform,
+            pods,
         }
     }
 
@@ -64,7 +100,8 @@ impl Serverless {
     #[must_use]
     pub fn start(self, addr: SocketAddr) -> (ServerlessHandle, JoinHandle<()>) {
         let (tx, rx) = mpsc::channel(512);
-        let handle = task::spawn(serverless_task(self, rx, addr));
+        let app_state = Arc::new(AppState::new(ServerlessHandle::new(tx.clone())));
+        let handle = task::spawn(serverless_task(self, rx, app_state, addr));
 
         (ServerlessHandle::new(tx), handle)
     }
@@ -125,5 +162,15 @@ impl Serverless {
 
         let pod_worker_id = pod.create_worker(task).await?;
         Some((pod_id, pod_worker_id))
+    }
+
+    #[inline(always)]
+    pub(super) fn set_universal_worker_name(&mut self, name: String, locator: (usize, usize)) {
+        self.mapping.entry(name).or_insert(locator);
+    }
+
+    #[inline(always)]
+    pub(super) fn remove_universal_worker_name(&mut self, name: &str) -> Option<(usize, usize)> {
+        self.mapping.remove(name)
     }
 }
