@@ -58,9 +58,11 @@ pub fn fetch(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
+    tracing::info!("fetch()");
     let state = WorkerState::get_from_isolate(scope);
-    state.add_client();
-    let client = unsafe { state.get_client().unwrap_unchecked() };
+
+    state.extensions.add_client();
+    let client = unsafe { state.extensions.get_client().unwrap_unchecked() };
 
     if args.length() == 0 {
         let exc = throw(
@@ -144,39 +146,49 @@ pub fn fetch(
     let resolver = some!(PromiseResolver::new(scope));
 
     let gresolver = Global::new(scope, resolver);
-    state.clone().tasks.spawn_local(async move {
-        let result = rq.send().await;
-        match result {
-            Ok(resp) => {
-                println!("success! {resp:#?}");
+    let fut = {
+        let state2 = state.clone();
+        state.monitored_future(async move {
+            state2.tick_monitoring();
 
-                let isolate = unsafe { state.get_isolate() };
-                scope_with_context!(
-                    isolate: isolate,
-                    let &mut scope,
-                    let context
-                );
+            let result = rq.send().await;
 
-                let resolver = Local::new(scope, gresolver);
-                resolver.resolve(scope, v8::null(scope).cast());
+            let isolate = unsafe { state2.get_isolate() };
+            match result {
+                Ok(_resp) => {
+                    scope_with_context!(
+                        isolate: isolate,
+                        let &mut scope,
+                        let context
+                    );
+
+                    let resolver = Local::new(scope, gresolver);
+                    state2.tick_monitoring();
+                    resolver.resolve(scope, v8::null(scope).cast());
+                    tracing::info!("resolved.")
+                }
+
+                Err(err) => {
+                    println!("failed :( {err:#?}");
+                    let details = err.to_string();
+
+                    let isolate = unsafe { state2.get_isolate() };
+                    scope_with_context!(
+                        isolate: isolate,
+                        let &mut scope,
+                        let context
+                    );
+
+                    let resolver = Local::new(scope, gresolver);
+                    state2.tick_monitoring();
+                    resolver.reject(scope, throw(scope, ThrowException::Error(details)));
+                }
             }
 
-            Err(err) => {
-                println!("failed :( {err:#?}");
-                let details = err.to_string();
-
-                let isolate = unsafe { state.get_isolate() };
-                scope_with_context!(
-                    isolate: isolate,
-                    let &mut scope,
-                    let context
-                );
-
-                let resolver = Local::new(scope, gresolver);
-                resolver.reject(scope, throw(scope, ThrowException::Error(details)));
-            }
-        }
-    });
+            isolate.perform_microtask_checkpoint();
+        })
+    };
+    state.tasks.spawn_local(fut);
 
     rv.set(resolver.cast());
 }

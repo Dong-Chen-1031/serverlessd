@@ -22,8 +22,8 @@ use crate::{
 /// ```
 macro_rules! add_fn {
     (let $name:ident = $k:expr, in: $obj:ident, scope: $scope:expr) => {{
-        let fnk = v8::Function::new($scope, $k).unwrap();
-        let k = v8::String::new($scope, stringify!($name)).unwrap();
+        let fnk = v8::Function::new($scope, $k)?;
+        let k = v8::String::new($scope, stringify!($name))?;
         $obj.set($scope, k.into(), fnk.into());
     }};
 }
@@ -71,7 +71,7 @@ fn resolve_module_callback_intrinsics<'a>(
 pub fn build_intrinsics(
     platform: &SharedRef<Platform>,
     isolate: &mut Isolate,
-) -> Global<v8::Value> {
+) -> Option<Global<v8::Value>> {
     let (module, promised) = {
         scope_with_context!(
             isolate: isolate,
@@ -88,18 +88,23 @@ pub fn build_intrinsics(
             scope: scope
         );
 
+        // point()
+        add_fn!(
+            let point = intrinsics::point,
+            in: intrinsics_obj,
+            scope: scope
+        );
+
         context.global(scope).set(
             scope,
-            v8::String::new(scope, "intrinsics").unwrap().cast(),
+            v8::String::new(scope, "intrinsics")?.cast(),
             intrinsics_obj.cast(),
         );
 
-        let source = get_intrinsics_file("index").unwrap();
+        let source = get_intrinsics_file("index")?;
 
-        let module = compile_module(scope, source, "index");
-        module
-            .instantiate_module(scope, resolve_module_callback_intrinsics)
-            .unwrap();
+        let module = compile_module(scope, source, "index")?;
+        module.instantiate_module(scope, resolve_module_callback_intrinsics)?;
 
         let promised = module
             .evaluate(scope)
@@ -126,7 +131,7 @@ pub fn build_intrinsics(
     }
 
     let namespace = module.get_module_namespace();
-    Global::new(scope, namespace)
+    Some(Global::new(scope, namespace))
 }
 
 /// Extract intrinsics to the scope so it can be used by the user.

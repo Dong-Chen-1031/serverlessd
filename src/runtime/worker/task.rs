@@ -1,0 +1,304 @@
+use std::{ffi::c_void, sync::Arc};
+
+use tokio::sync::oneshot;
+use v8::{External, Function, Global, Local, Platform, Promise, SharedRef};
+
+use crate::{
+    compile, intrinsics,
+    language::{ExceptionDetails, ExceptionDetailsExt, Promised},
+    runtime::{
+        WorkerState,
+        worker::{
+            MonitorHandle, WorkerTx,
+            error::WorkerError,
+            trigger::{WorkerRx, WorkerTrigger},
+        },
+    },
+    scope_with_context, try_catch,
+};
+
+/// Unwrap.
+///
+/// # Option<T>
+/// ```no_run
+/// // this should be used within create_task()
+/// let a = Some(1);
+/// let b = unwrap!(
+///     try_catch_scope,
+///     some init a.map(|k| k + 1)
+/// );
+/// assert!(b == 2);
+/// ```
+macro_rules! unwrap {
+    ($try_catch:expr, some $p:expr => $k:expr) => {{
+        let Some(k) = $k else {
+            return Err($p($try_catch.exception_details()));
+        };
+        k
+    }};
+
+    ($try_catch:expr, some compile $k:expr) => {
+        unwrap!($try_catch, some WorkerError::CompileError => $k)
+    };
+
+    ($try_catch:expr, some init $k:expr) => {
+        unwrap!($try_catch, some WorkerError::ModuleInitError => $k)
+    };
+
+    ($try_catch:expr, some runtime $k:expr) => {
+        unwrap!($try_catch, some WorkerError::RuntimeError => $k)
+    };
+}
+
+/// The worker task.
+///
+/// Example:
+///
+/// ```rs
+/// let serverless = Serverless::start_one();
+/// let task = WorkerTask {
+///     // the code
+///     source: "export default {}".to_string(),
+///
+///     // name for exception display
+///     source_name: "worker.js",
+///
+///     // the platform
+///     platform: serverless.get_platform(),
+/// }
+/// ```
+#[derive(Debug)]
+pub struct WorkerTask {
+    // TODO: use BTreeMap
+    pub source: String,
+    pub source_name: String,
+    pub platform: SharedRef<Platform>,
+}
+
+pub(super) async fn create_cancel_safe_task(
+    task: WorkerTask,
+    tx: WorkerTx,
+    rx: WorkerRx,
+    monitor_handle: MonitorHandle,
+) {
+    let mut state_handle = None;
+    let result = create_task(task, tx, rx, monitor_handle, &mut state_handle).await;
+    if let Some(state) = state_handle {
+        close_state(state).await;
+    }
+
+    if let Err(err) = result {
+        tracing::error!("got error on closed handler, {:?}", err);
+    }
+}
+
+#[tracing::instrument(skip_all)]
+async fn create_task(
+    task: WorkerTask,
+    tx: WorkerTx,
+    mut rx: WorkerRx,
+    monitor_handle: MonitorHandle,
+    state_handle: &mut Option<Arc<WorkerState>>,
+) -> Result<(), WorkerError> {
+    let WorkerTask {
+        source,
+        source_name,
+        platform,
+    } = task;
+
+    let mut isolate = Box::new(v8::Isolate::new(Default::default()));
+    isolate.set_microtasks_policy(v8::MicrotasksPolicy::Auto);
+
+    let Some(state) = WorkerState::create_injected(platform, isolate, tx, monitor_handle).await
+    else {
+        return Ok(());
+    };
+
+    state_handle.replace(state.clone());
+
+    tracing::info!("initializing environment for worker");
+
+    // environment initialization
+    let (module, promise) = {
+        scope_with_context!(
+            isolate: unsafe { state.get_isolate() },
+            let &mut scope,
+            let context
+        );
+        try_catch!(scope: scope, let try_catch);
+
+        let intrinsics_obj =
+            unwrap!(try_catch, some init intrinsics::build_intrinsics(&state.platform, try_catch));
+
+        // we're gonna put them in the global
+        {
+            let context_global = context.global(try_catch);
+            unwrap!(
+                try_catch,
+                some init intrinsics::extract_intrinsics(try_catch, context_global, intrinsics_obj)
+            );
+        }
+
+        let module = unwrap!(try_catch, some compile compile::compile_module(try_catch, source, source_name));
+
+        state.tick_monitoring();
+
+        // instantiate imports, etc.
+        {
+            let res = module.instantiate_module(try_catch, compile::resolve_module_callback);
+            if res.is_none() {
+                return Err(WorkerError::ModuleInitError(try_catch.exception_details()));
+            }
+        }
+
+        // instantiate evaluations
+        let Some(promise) = module.evaluate(try_catch) else {
+            return Err(WorkerError::ModuleInitError(try_catch.exception_details()));
+        };
+        let promise = promise.cast::<Promise>();
+
+        state.tick_monitoring();
+
+        (
+            Global::new(try_catch, module),
+            Global::new(try_catch, promise),
+        )
+    };
+
+    let isolate = unsafe { state.get_isolate() };
+    while Platform::pump_message_loop(&state.platform, isolate, false) {}
+
+    scope_with_context!(
+        isolate: isolate,
+        let &mut scope,
+        let context
+    );
+    try_catch!(scope: scope, let try_catch);
+
+    let module = Local::new(try_catch, module);
+    {
+        let promise = Local::new(try_catch, promise);
+        let promised = Promised::new(try_catch, promise);
+
+        match promised {
+            Promised::Rejected(value) => {
+                let exception = ExceptionDetails::from_exception(try_catch, value);
+                return Err(WorkerError::ModuleInitError(exception));
+            }
+            Promised::Resolved(_) => {
+                tracing::info!("worker env initialized");
+            }
+        }
+    }
+
+    let namespace = module.get_module_namespace().cast::<v8::Object>();
+    let entrypoint = unwrap!(
+        try_catch,
+        some init namespace.get(try_catch, {
+            unwrap!(try_catch, some init v8::String::new(try_catch, "default")).cast()
+        })
+    );
+
+    if !entrypoint.is_object() || entrypoint.is_null_or_undefined() {
+        tracing::error!("error while getting worker entrypoint");
+        return Err(WorkerError::NoEntrypoint);
+    }
+
+    let entrypoint = entrypoint.cast::<v8::Object>();
+    let entrypoint_fetch = {
+        let item = unwrap!(
+            try_catch,
+            some init entrypoint.get(try_catch, {
+                unwrap!(try_catch, some init v8::String::new(try_catch, "fetch")).cast()
+            })
+        );
+
+        if item.is_function() {
+            Some(item.cast::<v8::Function>())
+        } else {
+            None
+        }
+    };
+
+    while let Some(event) = rx.recv().await {
+        try_catch.perform_microtask_checkpoint();
+        state.cleanup_dead_repliers();
+
+        match event {
+            WorkerTrigger::Halt { token } => {
+                // clean up
+                tracing::info!("worker clean up");
+                token.send(()).ok();
+                break;
+            }
+
+            WorkerTrigger::Http { reply } => {
+                if let Some(fetch) = entrypoint_fetch {
+                    state.tick_monitoring();
+
+                    let Some(result) = fetch.call(try_catch, v8::undefined(try_catch).cast(), &[])
+                    else {
+                        return Err(WorkerError::Timeout);
+                    };
+
+                    state.tick_monitoring();
+
+                    if result.is_promise() {
+                        let promise = result.cast::<v8::Promise>();
+
+                        let replier_handle = Box::new(Some(reply));
+                        let replier_ptr = Box::into_raw(replier_handle);
+                        let idx = state.get_next_replier_idx();
+                        state.add_replier(idx, replier_ptr);
+
+                        promise.then(
+                            try_catch,
+                            unwrap!(
+                                try_catch,
+                                some runtime Function::builder(
+                                    |scope: &mut v8::PinScope,
+                                     args: v8::FunctionCallbackArguments,
+                                     _rv: v8::ReturnValue| {
+                                        let state = WorkerState::get_from_isolate(scope);
+                                        state.tick_monitoring(); // the cpu task is done. nice!
+
+                                        let replier = unsafe {
+                                            Box::from_raw(args.data().cast::<External>().value()
+                                                as *mut Option<oneshot::Sender<String>>)
+                                        };
+
+                                        if let Some(replier) = *replier {
+                                            println!("replier is still present, sending");
+                                            replier.send(args.get(0).to_rust_string_lossy(scope)).ok();
+                                        }
+                                    },
+                                )
+                                .data(
+                                    External::new(
+                                        try_catch,
+                                        replier_ptr as *mut c_void
+                                    )
+                                    .cast()
+                                )
+                                .build(try_catch)
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Gracefully closes the worker state, releasing memory.
+#[inline]
+async fn close_state(state: Arc<WorkerState>) {
+    let mut isolate = unsafe { Box::from_raw(state.isolate.as_ptr()) };
+    let state2 = WorkerState::open_from_isolate(&mut isolate);
+    state2.wait_close().await;
+
+    // at this point, state & state2 gets dropped
+    // memory gets freed (hopefully, PLEASE)
+}

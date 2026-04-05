@@ -1,15 +1,10 @@
-use std::cell::{Cell, RefCell};
-
 use tokio::{
     sync::{mpsc, oneshot},
     task,
 };
 use tokio_util::task::TaskTracker;
 
-use crate::runtime::{
-    Worker, WorkerTask, WorkerTrigger,
-    monitor::{Monitor, MonitorHandle},
-};
+use crate::runtime::{Monitor, MonitorHandle, WorkerHandle, WorkerTask, WorkerTrigger};
 
 #[derive(Debug)]
 pub enum PodTrigger {
@@ -40,7 +35,7 @@ type PodRx = mpsc::Receiver<PodTrigger>;
 
 /// A thread containing multiple workers.
 pub struct Pod {
-    workers: Vec<Option<Worker>>,
+    workers: Vec<Option<WorkerHandle>>,
     vacancies: Vec<usize>,
     pub(super) monitor: MonitorHandle,
     pub(super) tasks: TaskTracker,
@@ -89,7 +84,7 @@ impl Pod {
         })
     }
 
-    pub fn put_worker(&mut self, id: usize, worker: Worker) {
+    pub fn put_worker(&mut self, id: usize, worker: WorkerHandle) {
         unsafe {
             self.workers.get_mut(id).unwrap_unchecked().replace(worker);
         }
@@ -108,7 +103,7 @@ impl Pod {
     }
 
     #[inline]
-    fn get_worker(&self, id: usize) -> Option<&Worker> {
+    fn get_worker(&self, id: usize) -> Option<&WorkerHandle> {
         if let Some(worker) = self.workers.get(id) {
             worker.as_ref()
         } else {
@@ -120,7 +115,7 @@ impl Pod {
     #[inline]
     #[must_use]
     fn create_worker(&mut self, task: WorkerTask) -> usize {
-        let worker = Worker::start(self, task);
+        let worker = WorkerHandle::start(self, task);
 
         let id = self.get_next_worker_id();
         self.put_worker(id, worker);

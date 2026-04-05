@@ -1,7 +1,7 @@
 use std::{env, fs, path::Path};
 
 fn main() {
-    let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/intrinsics"));
+    let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/lib/intrinsics"));
 
     let arr = fs::read_dir(path)
         .expect("failed to read directory")
@@ -17,7 +17,7 @@ fn main() {
             let name = filename.split_once(".").expect("failed to get filename before extension").0;
 
             Some(format!(
-                r#"({0:?}, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/intrinsics/", {1:?})))"#,
+                r#"({0:?}, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/lib/intrinsics/", {1:?})))"#,
                 name,
                 filename
             ))

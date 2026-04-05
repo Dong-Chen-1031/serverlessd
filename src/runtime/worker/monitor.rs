@@ -9,9 +9,12 @@ use tokio_util::task::TaskTracker;
 
 use v8::IsolateHandle;
 
+use crate::runtime::{WorkerTrigger, worker::WorkerTx};
+
 pub enum MonitorTrigger {
     Spawn {
         isolate_handle: IsolateHandle,
+        worker_tx: WorkerTx,
         reply: oneshot::Sender<Monitoring>,
     },
 }
@@ -61,16 +64,18 @@ impl Monitor {
     /// # Safety
     /// Worker of ID `worker_id` must exist.
     #[must_use]
-    fn spawn(&mut self, isolate_handle: IsolateHandle) -> Monitoring {
+    fn spawn(&mut self, isolate_handle: IsolateHandle, worker_tx: WorkerTx) -> Monitoring {
         let (tx, rx) = mpsc::channel(1);
 
-        let mw = MonitoredWorker::new(isolate_handle, rx);
+        let mw = MonitoredWorker::new(isolate_handle, worker_tx, rx);
         self.tracker.spawn_local(monitor_worker_task(mw));
 
         Monitoring::new(tx)
     }
 }
 
+/// A monitor handle for communicating with the monitor
+/// task. You can request to monitor a worker with this.
 #[repr(transparent)]
 #[derive(Clone)]
 pub struct MonitorHandle {
@@ -84,12 +89,17 @@ impl MonitorHandle {
     }
 
     #[must_use]
-    pub async fn start_monitoring(&self, isolate_handle: IsolateHandle) -> Option<Monitoring> {
+    pub async fn start_monitoring(
+        &self,
+        isolate_handle: IsolateHandle,
+        worker_tx: WorkerTx,
+    ) -> Option<Monitoring> {
         let (reply, recv) = oneshot::channel();
         self.tx
             .send(MonitorTrigger::Spawn {
                 isolate_handle,
                 reply,
+                worker_tx,
             })
             .await
             .ok()?;
@@ -100,13 +110,18 @@ impl MonitorHandle {
 
 pub struct MonitoredWorker {
     isolate: IsolateHandle,
+    worker_tx: WorkerTx,
     rx: mpsc::Receiver<()>,
 }
 
 impl MonitoredWorker {
     #[inline(always)]
-    pub fn new(isolate: IsolateHandle, rx: mpsc::Receiver<()>) -> Self {
-        Self { isolate, rx }
+    pub fn new(isolate: IsolateHandle, worker_tx: WorkerTx, rx: mpsc::Receiver<()>) -> Self {
+        Self {
+            isolate,
+            worker_tx,
+            rx,
+        }
     }
 }
 
@@ -116,15 +131,16 @@ async fn monitor_task(mut monitor: Monitor, mut rx: MonitorRx) {
             MonitorTrigger::Spawn {
                 isolate_handle,
                 reply,
+                worker_tx,
             } => {
-                let monitoring = monitor.spawn(isolate_handle);
+                let monitoring = monitor.spawn(isolate_handle, worker_tx);
                 reply.send(monitoring).ok();
             }
         }
     }
 }
 
-struct MonitoredFuture<F> {
+pub struct MonitoredFuture<F> {
     inner: F,
     tx: mpsc::Sender<()>,
 }
@@ -158,10 +174,32 @@ impl Monitoring {
         Self { tx }
     }
 
-    /// Tick. You must tick back when the work is done.
+    /// Tick.
+    ///
+    /// You must tick back when the work is done.
+    /// If the tick-back isn't received within 30ms, the
+    /// associated isolate will be terminated immediately.
+    ///
+    /// # Example
+    /// ```no_run
+    /// monitoring.tick();
+    ///
+    /// do_some_probably_heavy_work();
+    ///
+    /// monitoring.tick();
+    /// ```
     #[inline(always)]
     pub fn tick(&self) {
         self.tx.try_send(()).ok();
+    }
+
+    /// Create a monitored future. Ticking is done between task polls.
+    #[inline(always)]
+    pub fn monitored_future<F: Future>(&self, f: F) -> MonitoredFuture<F> {
+        MonitoredFuture {
+            inner: f,
+            tx: self.tx.clone(),
+        }
     }
 }
 
@@ -181,16 +219,22 @@ async fn monitor_worker_task(mut mw: MonitoredWorker) {
             biased;
 
             _ = mw.rx.recv() => {
-                elapsed += start.elapsed();
+                let task_time = start.elapsed();
+                // tracing::info!("elapsed: {:?}", task_time);
+                elapsed += task_time;
             }
-            _ = tokio::time::sleep(Duration::from_millis(30)) => {
-                tracing::error!("(per task, 30ms) time's up");
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                tracing::error!("(per task, 100ms) time's up");
                 break;
             }
         };
     }
 
     if !mw.isolate.terminate_execution() {
-        tracing::error!("failed to terminate isolate when time's up");
+        tracing::error!("failed to terminate isolate when time's up (isolate already destroyed)");
     }
+
+    let (token, recv) = oneshot::channel();
+    mw.worker_tx.send(WorkerTrigger::Halt { token }).await.ok();
+    recv.await.ok();
 }

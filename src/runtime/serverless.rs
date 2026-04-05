@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
-use hyper_util::rt::TokioIo;
 use tokio::{
+    io::AsyncWriteExt,
     net::TcpListener,
     sync::{mpsc, oneshot},
     task::{self, JoinHandle},
@@ -237,10 +237,16 @@ async fn serverless_task(mut serverless: Serverless, mut rx: ServerlessRx, addr:
                 }
             },
 
-            Ok((stream, _)) = listener.accept() => {
-                let _io = TokioIo::new(stream);
+            Ok((mut stream, _)) = listener.accept() => {
                 let pod = serverless.get_pod(0).unwrap();
-                let _ = pod.trigger(PodTrigger::ToWorker { id: 0, trigger: WorkerTrigger::Http {  } }).await;
+                let (reply, _) = oneshot::channel();
+
+                let _ = pod.trigger(PodTrigger::ToWorker { id: 0, trigger: WorkerTrigger::Http { reply } }).await;
+
+
+                let (_, mut writer) = stream.split();
+                writer.write(b"hello, world!").await.ok();
+
 
                 tracing::info!("got http connection!");
             }

@@ -31,7 +31,7 @@ pub fn compile_module<'s, K: AsRef<str>>(
     scope: &PinScope<'s, '_>,
     source: K,
     name: K,
-) -> v8::Local<'s, v8::Module> {
+) -> Option<v8::Local<'s, v8::Module>> {
     let source_str = v8::String::new(scope, source.as_ref()).unwrap();
     let name_str = v8::String::new(scope, name.as_ref()).unwrap();
 
@@ -51,5 +51,5 @@ pub fn compile_module<'s, K: AsRef<str>>(
 
     let mut source = Source::new(source_str, Some(&origin));
 
-    v8::script_compiler::compile_module(scope, &mut source).expect("Module compilation failed")
+    v8::script_compiler::compile_module(scope, &mut source)
 }
