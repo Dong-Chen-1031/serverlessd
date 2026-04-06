@@ -230,6 +230,7 @@ async fn monitor_worker_task(mut mw: MonitoredWorker) {
         };
     }
 
+    tracing::info!("terminating");
     if !mw.isolate.terminate_execution() {
         tracing::error!("failed to terminate isolate when time's up (isolate already destroyed)");
     }

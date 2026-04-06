@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::runtime::{PodTrigger, WorkerTask, serverless::code_store::CodeStoreError};
+use crate::runtime::{PodTrigger, serverless::code_store::CodeStoreError};
 
 #[derive(Debug)]
 pub enum ServerlessTrigger {

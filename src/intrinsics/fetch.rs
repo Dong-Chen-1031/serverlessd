@@ -169,7 +169,6 @@ pub fn fetch(
                 }
 
                 Err(err) => {
-                    println!("failed :( {err:#?}");
                     let details = err.to_string();
 
                     let isolate = unsafe { state2.get_isolate() };

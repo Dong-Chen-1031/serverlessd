@@ -2,7 +2,7 @@ use bytes::Bytes;
 use tokio::sync::oneshot;
 
 use crate::runtime::{
-    PodTrigger, WorkerTask, WorkerTrigger,
+    PodTrigger, WorkerTrigger,
     serverless::{
         code_store::CodeStoreError,
         trigger::{ServerlessTrigger, ServerlessTx},
@@ -23,6 +23,8 @@ impl ServerlessHandle {
     /// Notifies the serverless runtime to create a worker.
     #[must_use]
     pub async fn create_worker(&self, name: String) -> Option<(usize, usize)> {
+        tracing::info!("creating worker!");
+
         let (reply, receive) = oneshot::channel();
         self.tx
             .send(ServerlessTrigger::CreateWorker { name, reply })

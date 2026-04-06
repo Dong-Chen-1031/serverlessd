@@ -64,12 +64,15 @@ pub(super) async fn serverless_task(
                                     None => {
                                         reply.send(None).ok();
                                         continue;
-                                        }
+                                    }
                                 };
-                                reply.send(serverless.create_worker(WorkerTask { source, platform: serverless.get_platform() }).await).ok();
+                                let result = serverless.create_worker(WorkerTask { source, platform: serverless.get_platform() }).await;
+                                reply.send(result).ok();
                             }
-                            ServerlessTrigger::ToPod { id: _, trigger: _ } => {
-                                unimplemented!()
+                            ServerlessTrigger::ToPod { id, trigger } => {
+                                if let Some(pod) = serverless.get_pod(id) {
+                                    let _ = pod.trigger(trigger).await;
+                                }
                             }
 
                             ServerlessTrigger::SetUniversalWorkerName { name, locator } => {

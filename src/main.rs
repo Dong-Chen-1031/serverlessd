@@ -40,8 +40,12 @@ enum Command {
     /// `n-pods` and `n-pods-per-worker` options.
     Run(RunArgs),
 
-    /// Cleans all stored workers.
+    /// Clean all stored workers.
     Clean(CleanArgs),
+
+    /// Upload a worker in this working directory,
+    /// instead of HTTP.
+    Upload(UploadArgs),
 }
 
 #[derive(clap::Args)]
@@ -87,6 +91,17 @@ struct CleanArgs {
     y: bool,
 }
 
+#[derive(clap::Args)]
+struct UploadArgs {
+    /// The file to upload.
+    #[arg(long)]
+    file: PathBuf,
+
+    /// The name of the worker.
+    #[arg(long)]
+    name: String,
+}
+
 fn main() {
     let cli = Cli::parse();
     dotenvy::dotenv_override().ok();
@@ -107,12 +122,11 @@ fn main() {
             let source = match fs::read_to_string(&args.file) {
                 Ok(t) => t,
                 Err(e) => {
-                    eprintln!("======x error: failed to open {:?}", &args.file);
-                    eprintln!("        error: {}", &e.to_string());
+                    eprintln!("=====x error: failed to open {:?}", &args.file);
+                    eprintln!("       error: {}", &e.to_string());
                     return;
                 }
             };
-            let source_name = args.file.to_string_lossy().into_owned();
 
             let secret = dotenvy::var("SERVERLESSD_SECRET").unwrap_or_else(|_| {
                 eprintln!("=====> couldn't find env 'SERVERLESSD_SECRET', using blank bytes");
@@ -121,7 +135,6 @@ fn main() {
 
             rt.block_on(start_one(
                 source,
-                source_name,
                 SocketAddr::new(
                     IpAddr::from_str(&args.host.as_ref().map(|k| &**k).unwrap_or("127.0.0.1"))
                         .expect("failed to parse ip addr"),
@@ -140,7 +153,7 @@ fn main() {
                 .expect("failed to create async runtime");
 
             let Ok(secret) = dotenvy::var("SERVERLESSD_SECRET") else {
-                eprintln!("======x error: couldn't find env 'SERVERLESSD_SECRET'");
+                eprintln!("=====x error: couldn't find env 'SERVERLESSD_SECRET'");
                 return;
             };
 
@@ -172,29 +185,52 @@ fn main() {
             fs::remove_dir_all(".serverlessd/").ok();
             println!("=====> cleaned all workers.");
         }
+
+        Command::Upload(args) => {
+            let contents = match fs::read(&args.file) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("=====x error: failed to open {:?}", &args.file);
+                    eprintln!("       error: {}", &e.to_string());
+                    return;
+                }
+            };
+            let res = fs::write(
+                PathBuf::from(".serverlessd/workers/").join(&args.file),
+                contents,
+            );
+
+            match res {
+                Ok(_) => println!("=====> successfully written"),
+                Err(e) => {
+                    eprintln!("=====x error: failed to write {:?}", &args.file);
+                    eprintln!("       error: {}", &e.to_string());
+                    return;
+                }
+            }
+        }
     }
 }
 
-async fn start_one(source: String, source_name: String, addr: SocketAddr, secret: String) {
+async fn start_one(source: String, addr: SocketAddr, secret: String) {
     let serverless = Serverless::new_one();
-    let platform = serverless.get_platform();
 
     let (svl, handle) = serverless.start(addr, secret);
 
     let res = svl
         .upload_worker("index".to_string(), Bytes::from_owner(source))
         .await;
-    if res.is_none() {
-        tracing::error!("failed to upload one worker");
-        eprintln!("======x error: failed to upload one worker");
-        eprintln!("               this is usually due to a closed serverless runtime");
+    if res.is_some() {
+        tracing::error!("failed to upload one worker, reason: {res:?}");
+        eprintln!("=====x error: failed to upload one worker");
+        eprintln!("              this is usually due to a closed serverless runtime");
         return;
     }
 
     let Some((pod_id, pod_worker_id)) = svl.create_worker("index".to_string()).await else {
         tracing::error!("failed to create one worker");
-        eprintln!("======x error: failed to create one worker");
-        eprintln!("               this is usually due to a closed serverless runtime");
+        eprintln!("=====x error: failed to create one worker");
+        eprintln!("              this is usually due to a closed serverless runtime");
         return;
     };
 

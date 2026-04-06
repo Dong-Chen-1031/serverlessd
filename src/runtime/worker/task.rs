@@ -212,7 +212,9 @@ async fn create_task(
         }
     };
 
+    tracing::info!("worker now waiting for events");
     while let Some(event) = rx.recv().await {
+        tracing::info!("microtask");
         try_catch.perform_microtask_checkpoint();
         state.cleanup_dead_repliers();
 
@@ -225,6 +227,7 @@ async fn create_task(
             }
 
             WorkerTrigger::Http { reply } => {
+                tracing::info!("worker received http");
                 if let Some(fetch) = entrypoint_fetch {
                     state.tick_monitoring();
 
@@ -240,11 +243,13 @@ async fn create_task(
                     }
                     let promise = result.cast::<v8::Promise>();
 
+                    tracing::info!("replier");
                     let replier_handle = Box::new(Some(reply));
                     let replier_ptr = Box::into_raw(replier_handle);
                     let idx = state.get_next_replier_idx();
                     state.add_replier(idx, replier_ptr);
 
+                    tracing::info!("===> .then()");
                     promise.then(
                         try_catch,
                         unwrap!(
@@ -262,7 +267,6 @@ async fn create_task(
                                     };
 
                                     if let Some(replier) = replier.take() {
-                                        println!("replier is still present, sending");
                                         replier.send(args.get(0).to_rust_string_lossy(scope)).ok();
                                     }
                                 },
@@ -277,11 +281,14 @@ async fn create_task(
                             .build(try_catch)
                         ),
                     );
+
+                    try_catch.perform_microtask_checkpoint();
                 }
             }
         }
     }
 
+    tracing::info!("worker task dropped");
     Ok(())
 }
 
