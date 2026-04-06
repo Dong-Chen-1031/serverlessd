@@ -41,10 +41,13 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
+      - name: Rename binary
+        run: cp target/${{ matrix.target }}/release/serverlessd ${{ matrix.asset_name }}
+
       - name: Upload binary to release
         uses: softprops/action-gh-release@v2
         with:
-          files: target/${{ matrix.target }}/release/serverlessd
+          files: ${{ matrix.asset_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -87,9 +90,12 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
+      - name: Rename binary
+        run: cp target/${{ matrix.target }}/release/serverlessd ${{ matrix.asset_name }}
+
       - name: Upload binary to release
         uses: softprops/action-gh-release@v2
         with:
-          files: target/${{ matrix.target }}/release/serverlessd
+          files: ${{ matrix.asset_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
