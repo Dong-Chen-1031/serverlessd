@@ -14,7 +14,6 @@ pub enum PodTrigger {
         reply: oneshot::Sender<usize>,
     },
 
-    #[allow(unused)]
     ToWorker {
         id: usize,
         trigger: WorkerTrigger,

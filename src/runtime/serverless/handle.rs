@@ -49,6 +49,13 @@ impl ServerlessHandle {
         recv.await.ok()?
     }
 
+    /// Remove worker code.
+    #[inline]
+    pub async fn remove_worker(&self, name: String) -> Option<()> {
+        self.trigger(ServerlessTrigger::RemoveWorkerCode { name })
+            .await
+    }
+
     #[inline]
     #[must_use]
     pub async fn send_http_to_worker(&self, pod: usize, wrk: usize) -> Option<String> {

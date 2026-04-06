@@ -10,15 +10,6 @@ pub enum ServerlessTrigger {
         reply: oneshot::Sender<Option<(usize, usize)>>,
     },
 
-    SetUniversalWorkerName {
-        name: String,
-        locator: (usize, usize),
-    },
-
-    RemoveUniversalWorkerName {
-        name: String,
-    },
-
     UploadWorkerCode {
         name: String,
         code: Bytes,

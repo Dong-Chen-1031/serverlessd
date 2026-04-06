@@ -1,7 +1,6 @@
-use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use uuid::Uuid;
 
 use salvo::http::StatusCode;
 use salvo::{Depot, FlowCtrl, Handler, Request, Response};
@@ -80,30 +79,30 @@ pub(super) struct Claims {
     jti: String,
 }
 
-pub(super) fn make_jwt(
-    subdomain: &str,
-    body: &[u8],
-    secret: &[u8],
-) -> Result<String, jsonwebtoken::errors::Error> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+// pub(super) fn make_jwt(
+//     subdomain: &str,
+//     body: &[u8],
+//     secret: &[u8],
+// ) -> Result<String, jsonwebtoken::errors::Error> {
+//     let now = std::time::SystemTime::now()
+//         .duration_since(std::time::UNIX_EPOCH)
+//         .unwrap()
+//         .as_secs();
 
-    let hash = hex::encode(Sha256::digest(body));
+//     let hash = hex::encode(Sha256::digest(body));
 
-    let claims = Claims {
-        sub: subdomain.to_string(),
-        for_: "webhook".to_string(),
-        hash,
-        iat: now,
-        exp: now + 30,
-        jti: Uuid::new_v4().to_string(),
-    };
+//     let claims = Claims {
+//         sub: subdomain.to_string(),
+//         for_: "webhook".to_string(),
+//         hash,
+//         iat: now,
+//         exp: now + 30,
+//         jti: Uuid::new_v4().to_string(),
+//     };
 
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(secret),
-    )
-}
+//     encode(
+//         &Header::default(),
+//         &claims,
+//         &EncodingKey::from_secret(secret),
+//     )
+// }

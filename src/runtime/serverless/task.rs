@@ -75,14 +75,6 @@ pub(super) async fn serverless_task(
                                 }
                             }
 
-                            ServerlessTrigger::SetUniversalWorkerName { name, locator } => {
-                                serverless.set_universal_worker_name(name, locator);
-                            }
-
-                            ServerlessTrigger::RemoveUniversalWorkerName { name } => {
-                                serverless.remove_universal_worker_name(&name);
-                            }
-
                             ServerlessTrigger::UploadWorkerCode { name, code, reply } => {
                                 let err = serverless.upload_worker_code(name, code).await.err();
                                 reply.send(err).ok();

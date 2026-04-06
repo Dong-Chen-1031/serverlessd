@@ -31,7 +31,6 @@ impl ExceptionDetails {
     }
 }
 
-#[allow(unused)]
 pub trait ExceptionDetailsExt {
     /// Gets the exception details for better error-handling support.
     fn exception_details(&self) -> Option<ExceptionDetails>;

@@ -20,9 +20,10 @@ pub(super) async fn start_server(
     let router = Router::new()
         .hoop(affix_state::inject(Arc::new(AppState { serverless })))
         .push(
-            Router::with_path("/_/create/{name}")
+            Router::new()
                 .hoop(AuthMiddleware::new(secret))
-                .post(api_create_worker),
+                .push(Router::with_path("/_/upload/{name}").post(api_upload_worker))
+                .push(Router::with_path("/_/remove/{name}").post(api_remove_worker)),
         )
         .push(Router::with_path("/worker/{name}/{**rest}").get(worker))
         .push(Router::with_path("{**}").goal(wildcard));
@@ -38,6 +39,7 @@ pub(super) async fn start_server(
 async fn handle_error(res: &mut Response) {
     let status = res.status_code.unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     res.render(Json(json!({
+        "ok": false,
         "error": status.canonical_reason().unwrap_or("unknown"),
     })));
 }
@@ -65,7 +67,7 @@ async fn worker(req: &mut Request, res: &mut Response, depot: &Depot) {
 }
 
 #[handler]
-async fn api_create_worker(req: &mut Request, res: &mut Response, depot: &Depot) {
+async fn api_upload_worker(req: &mut Request, res: &mut Response, depot: &Depot) {
     let worker_name = req.param::<String>("name").unwrap();
     let worker_bytes = match req.payload().await {
         Ok(t) => t,
@@ -89,6 +91,15 @@ async fn api_create_worker(req: &mut Request, res: &mut Response, depot: &Depot)
     } else {
         res.render(Json(json!({"ok": true})));
     }
+}
+
+#[handler]
+async fn api_remove_worker(req: &mut Request, res: &mut Response, depot: &Depot) {
+    let worker_name = req.param::<String>("name").unwrap();
+    let state = depot.obtain::<Arc<AppState>>().unwrap();
+    state.serverless.remove_worker(worker_name).await;
+
+    res.render(Json(json!({"ok": true})));
 }
 
 #[inline(always)]

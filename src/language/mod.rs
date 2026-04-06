@@ -4,6 +4,5 @@
 mod exception;
 mod promise;
 
-#[allow(unused)]
 pub use exception::{ExceptionDetails, ExceptionDetailsExt, ThrowException, throw};
 pub use promise::Promised;

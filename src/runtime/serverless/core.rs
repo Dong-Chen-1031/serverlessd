@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::SocketAddr};
+use std::net::SocketAddr;
 
 use bytes::Bytes;
 use tokio::{
@@ -29,7 +29,6 @@ pub struct Serverless {
     pub(super) n_threads: usize,
     pub(super) n_workers: usize,
 
-    pub(super) mapping: HashMap<String, (usize, usize)>,
     pub(super) code_store: CodeStore,
 
     // why the fuck is this super fucking big???
@@ -57,7 +56,6 @@ impl Serverless {
         Self {
             n_threads,
             n_workers,
-            mapping: HashMap::with_capacity(n_threads * n_workers),
             code_store,
             platform,
             pods,
@@ -142,16 +140,6 @@ impl Serverless {
 
         let pod_worker_id = pod.create_worker(task).await?;
         Some((pod_id, pod_worker_id))
-    }
-
-    #[inline(always)]
-    pub(super) fn set_universal_worker_name(&mut self, name: String, locator: (usize, usize)) {
-        self.mapping.entry(name).or_insert(locator);
-    }
-
-    #[inline(always)]
-    pub(super) fn remove_universal_worker_name(&mut self, name: &str) -> Option<(usize, usize)> {
-        self.mapping.remove(name)
     }
 
     #[inline]
