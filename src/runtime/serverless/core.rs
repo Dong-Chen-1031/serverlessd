@@ -1,5 +1,6 @@
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr};
 
+use bytes::Bytes;
 use tokio::{
     sync::mpsc,
     task::{self, JoinHandle},
@@ -9,21 +10,20 @@ use v8::{Platform, SharedRef};
 use crate::runtime::{
     PodHandle, WorkerTask,
     serverless::{
-        app_service::AppState,
         code_store::{CodeStore, CodeStoreError},
         handle::ServerlessHandle,
         task::serverless_task,
     },
 };
 
-/// The serverless runtime.
+/// The serverless runtime, as an application.
 ///
 /// Example:
 /// ```rs
 /// let serverless = Serverless::new(
 ///     10, // the number of threads you need
 ///     10, // the number of workers per thread
-/// )
+/// );
 /// ```
 pub struct Serverless {
     pub(super) n_threads: usize,
@@ -73,10 +73,15 @@ impl Serverless {
     /// Starts the serverless runtime.
     #[inline]
     #[must_use]
-    pub fn start(self, addr: SocketAddr) -> (ServerlessHandle, JoinHandle<()>) {
+    pub fn start(self, addr: SocketAddr, secret: String) -> (ServerlessHandle, JoinHandle<()>) {
         let (tx, rx) = mpsc::channel(512);
-        let app_state = Arc::new(AppState::new(ServerlessHandle::new(tx.clone())));
-        let handle = task::spawn(serverless_task(self, rx, app_state, addr));
+        let handle = task::spawn(serverless_task(
+            self,
+            rx,
+            addr,
+            ServerlessHandle::new(tx.clone()),
+            secret,
+        ));
 
         (ServerlessHandle::new(tx), handle)
     }
@@ -153,7 +158,7 @@ impl Serverless {
     pub(super) async fn upload_worker_code(
         &mut self,
         name: String,
-        code: String,
+        code: Bytes,
     ) -> Result<(), CodeStoreError> {
         self.code_store.upload_worker_code(name, code).await
     }

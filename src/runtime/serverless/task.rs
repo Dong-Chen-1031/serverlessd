@@ -1,17 +1,13 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::net::SocketAddr;
 
-use hyper::service::service_fn;
-use hyper_util::{
-    rt::{TokioExecutor, TokioIo},
-    server::conn::auto,
-};
-use tokio::{net::TcpListener, task::JoinHandle};
+use tokio::task::JoinHandle;
 
 use crate::runtime::{
     Pod,
     serverless::{
-        app_service::{AppState, service_handler},
+        app::start_server,
         core::Serverless,
+        handle::ServerlessHandle,
         trigger::{ServerlessRx, ServerlessTrigger},
     },
 };
@@ -19,9 +15,11 @@ use crate::runtime::{
 pub(super) async fn serverless_task(
     mut serverless: Serverless,
     mut rx: ServerlessRx,
-    app_state: Arc<AppState>,
     addr: SocketAddr,
+    svl_handle: ServerlessHandle,
+    secret: String,
 ) {
+    // first, we initialize the filesystem
     serverless.code_store.check_fs().await;
 
     // now, we gotta start those threads
@@ -37,18 +35,22 @@ pub(super) async fn serverless_task(
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
 
-    let Ok(listener) = TcpListener::bind(addr).await else {
-        tracing::error!("failed to create tcp listener, exiting");
-        close_serverless(serverless, handles).await;
-        return;
-    };
-
-    println!("======> server started at {addr}");
+    let api_handle = std::pin::pin!(start_server(addr, svl_handle, secret));
+    tokio::pin!(api_handle);
 
     loop {
         tokio::select! {
             _ = &mut ctrl_c => {
                 close_serverless(serverless, handles).await;
+                break;
+            },
+
+            result = &mut api_handle => {
+                tracing::error!("server exited unexpectedly: {:?}", result);
+                eprintln!("=====x error: server exited unexpectedly, exiting");
+                if let Err(e) = result {
+                    eprintln!("=====x error: {}", e.to_string());
+                }
                 break;
             },
 
@@ -84,23 +86,6 @@ pub(super) async fn serverless_task(
                     None => break, // sender dropped, shut down
                 }
             },
-
-            Ok((stream, _)) = listener.accept() => {
-                let io = TokioIo::new(stream);
-                let app_state1 = app_state.clone();
-                tokio::task::spawn(async move {
-                    let app_state2 = app_state1;
-                    if let Err(err) = auto::Builder::new(TokioExecutor::new())
-                        .serve_connection(io, service_fn(move |req| {
-                                service_handler(app_state2.clone(), req)
-
-                        }))
-                        .await
-                    {
-                        tracing::error!("error serving connection: {:#?}", err);
-                    }
-                });
-            }
         }
     }
 }

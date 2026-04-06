@@ -4,23 +4,27 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+clap = { version = "4.6.0", features = ["derive"] }
+once_cell = "1.21.4"
+regex = "1.12.3"
+reqwest = { version = "0.13.2", features = ["json"] }
+salvo = { version = "0.91.1", features = ["affix-state"] }
+serde_json = "1.0.149"
+thiserror = "2.0.18"
+tokio = { version = "1.51.0", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
-clap = { version = "4.6.0", features = ["derive"] }
-tokio = { version = "1", features = ["full"] }
 v8 = "147.0.0"
-reqwest = { version = "0.13", features = ["json"] }
+icu_calendar = "~2.1" # this is to fix some weird ass errors
+serde = "1.0.228"
 tokio-util = { version = "0.7.18", features = ["rt"] }
-hyper = { version = "1.9.0", features = ["full"] }
-http-body-util = "0.1.3"
-hyper-util = { version = "0.1.20", features = ["full"] }
-url = "2.5.8"
-thiserror = "2.0.18"
-matchit = "0.9.1"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-regex = "1.12.3"
-once_cell = "1.21.4"
+bytes = "1.11.1"
+sha2 = "0.11.0"
+jsonwebtoken = "10.3.0"
+uuid = { version = "1.23.0", features = ["v4"] }
+hex = "0.4.3"
+dotenvy = "0.15.7"
+async-trait = "0.1.89"
 
 [dev-dependencies]
 pnet = "0.35.0"

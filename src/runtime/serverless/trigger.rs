@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::runtime::{PodTrigger, WorkerTask, serverless::code_store::CodeStoreError};
@@ -20,7 +21,7 @@ pub enum ServerlessTrigger {
 
     UploadWorkerCode {
         name: String,
-        code: String,
+        code: Bytes,
         reply: oneshot::Sender<Option<CodeStoreError>>,
     },
 

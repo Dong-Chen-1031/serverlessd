@@ -1,4 +1,5 @@
-mod app_service;
+mod app;
+mod app_security;
 mod code_store;
 mod core;
 mod handle;

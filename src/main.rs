@@ -75,8 +75,9 @@ struct RunArgs {
     n_workers_per_pod: usize,
 }
 
-fn main() -> Result<(), Box<dyn core::error::Error>> {
+fn main() {
     let cli = Cli::parse();
+    dotenvy::dotenv_override().ok();
 
     if cli.debug {
         tracing_subscriber::fmt::init();
@@ -91,8 +92,20 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
                 .build()
                 .expect("failed to create async runtime");
 
-            let source = fs::read_to_string(&args.file)?;
+            let source = match fs::read_to_string(&args.file) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("======x error: failed to open {:?}", &args.file);
+                    eprintln!("        error: {}", &e.to_string());
+                    return;
+                }
+            };
             let source_name = args.file.to_string_lossy().into_owned();
+
+            let secret = dotenvy::var("SERVERLESSD_SECRET").unwrap_or_else(|_| {
+                eprintln!("=====> couldn't find env 'SERVERLESSD_SECRET', using blank bytes");
+                "0".repeat(32)
+            });
 
             rt.block_on(start_one(
                 source,
@@ -102,6 +115,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
                         .expect("failed to parse ip addr"),
                     args.port.unwrap_or(3000),
                 ),
+                secret,
             ));
         }
 
@@ -113,6 +127,11 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
                 .build()
                 .expect("failed to create async runtime");
 
+            let Ok(secret) = dotenvy::var("SERVERLESSD_SECRET") else {
+                eprintln!("======x error: couldn't find env 'SERVERLESSD_SECRET'");
+                return;
+            };
+
             rt.block_on(start(
                 args.n_pods,
                 args.n_workers_per_pod,
@@ -121,27 +140,31 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
                         .expect("failed to parse ip addr"),
                     args.port.unwrap_or(3000),
                 ),
+                secret,
             ));
         }
     }
-
-    Ok(())
 }
 
-async fn start_one(source: String, source_name: String, addr: SocketAddr) {
+async fn start_one(source: String, source_name: String, addr: SocketAddr, secret: String) {
     let serverless = Serverless::new_one();
     let platform = serverless.get_platform();
 
-    let (svl, handle) = serverless.start(addr);
+    let (svl, handle) = serverless.start(addr, secret);
 
-    let (pod_id, pod_worker_id) = svl
+    let Some((pod_id, pod_worker_id)) = svl
         .create_worker(WorkerTask {
             source,
             source_name,
             platform,
         })
         .await
-        .expect("failed to create worker");
+    else {
+        tracing::error!("failed to create worker");
+        eprintln!("======x error: failed to create one worker");
+        eprintln!("               this is usually due to a closed serverless runtime");
+        return;
+    };
 
     tracing::info!("created one worker at {}:{}", pod_id, pod_worker_id);
 
@@ -150,10 +173,10 @@ async fn start_one(source: String, source_name: String, addr: SocketAddr) {
     }
 }
 
-async fn start(n_workers: usize, n_workers_per_pod: usize, addr: SocketAddr) {
+async fn start(n_workers: usize, n_workers_per_pod: usize, addr: SocketAddr, secret: String) {
     let serverless = Serverless::new(n_workers, n_workers_per_pod);
 
-    let (_svl, handle) = serverless.start(addr);
+    let (_svl, handle) = serverless.start(addr, secret);
 
     if let Err(e) = handle.await {
         tracing::error!(?e, "error while joining task handle");

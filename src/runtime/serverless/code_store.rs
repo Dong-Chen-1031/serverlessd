@@ -1,5 +1,6 @@
-use std::{collections::HashMap, fs, path::PathBuf};
+use std::{fs, path::PathBuf};
 
+use bytes::Bytes;
 use once_cell::sync::OnceCell;
 use regex::Regex;
 use tokio::io;
@@ -12,7 +13,7 @@ fn get_validate_regex() -> &'static Regex {
     } else {
         VALIDATE_REGEX
             .set(
-                Regex::new(r"^[^-][0-9A-Za-z-]*$")
+                Regex::new(r"^[0-9A-Za-z-.]+$")
                     .expect("failed to compile worker name validation regex"),
             )
             .ok();
@@ -29,16 +30,13 @@ pub enum CodeStoreError {
     IoError(io::Error),
 }
 
-pub struct CodeStore {
-    pub(super) uploads: HashMap<String, PathBuf>,
-}
+/// Worker code store, using the filesystem.
+pub struct CodeStore;
 
 impl CodeStore {
     #[inline]
     pub fn new() -> Self {
-        Self {
-            uploads: HashMap::new(),
-        }
+        Self
     }
 
     /// Check the filesystem.
@@ -59,9 +57,9 @@ impl CodeStore {
 
     #[inline(always)]
     pub(super) async fn upload_worker_code(
-        &mut self,
+        &self,
         name: String,
-        code: String,
+        code: Bytes,
     ) -> Result<(), CodeStoreError> {
         if !get_validate_regex().is_match(&name) {
             return Err(CodeStoreError::InvalidName(name));
@@ -71,19 +69,13 @@ impl CodeStore {
         tokio::fs::write(&path, code)
             .await
             .map_err(|err| CodeStoreError::IoError(err))?;
-        self.uploads.insert(name, path);
 
         Ok(())
     }
 
     #[inline(always)]
-    pub(super) async fn remove_worker_code(&mut self, name: &str) {
-        let res = self.uploads.remove(name);
-
-        // the worker exists, fuh
-        if res.is_some() {
-            let path = self.check_fs().await.join(format!("{}.js", &name));
-            fs::remove_file(path).ok();
-        }
+    pub(super) async fn remove_worker_code(&self, name: &str) {
+        let path = self.check_fs().await.join(format!("{}.js", &name));
+        fs::remove_file(path).ok();
     }
 }
