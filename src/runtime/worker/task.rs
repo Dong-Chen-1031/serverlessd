@@ -243,47 +243,48 @@ async fn create_task(
 
                     state.tick_monitoring();
 
-                    if result.is_promise() {
-                        let promise = result.cast::<v8::Promise>();
-
-                        let replier_handle = Box::new(Some(reply));
-                        let replier_ptr = Box::into_raw(replier_handle);
-                        let idx = state.get_next_replier_idx();
-                        state.add_replier(idx, replier_ptr);
-
-                        promise.then(
-                            try_catch,
-                            unwrap!(
-                                try_catch,
-                                some runtime Function::builder(
-                                    |scope: &mut v8::PinScope,
-                                     args: v8::FunctionCallbackArguments,
-                                     _rv: v8::ReturnValue| {
-                                        let state = WorkerState::get_from_isolate(scope);
-                                        state.tick_monitoring(); // the cpu task is done. nice!
-
-                                        let replier = unsafe {
-                                            Box::from_raw(args.data().cast::<External>().value()
-                                                as *mut Option<oneshot::Sender<String>>)
-                                        };
-
-                                        if let Some(replier) = *replier {
-                                            println!("replier is still present, sending");
-                                            replier.send(args.get(0).to_rust_string_lossy(scope)).ok();
-                                        }
-                                    },
-                                )
-                                .data(
-                                    External::new(
-                                        try_catch,
-                                        replier_ptr as *mut c_void
-                                    )
-                                    .cast()
-                                )
-                                .build(try_catch)
-                            ),
-                        );
+                    if !result.is_promise() {
+                        continue;
                     }
+                    let promise = result.cast::<v8::Promise>();
+
+                    let replier_handle = Box::new(Some(reply));
+                    let replier_ptr = Box::into_raw(replier_handle);
+                    let idx = state.get_next_replier_idx();
+                    state.add_replier(idx, replier_ptr);
+
+                    promise.then(
+                        try_catch,
+                        unwrap!(
+                            try_catch,
+                            some runtime Function::builder(
+                                |scope: &mut v8::PinScope,
+                                 args: v8::FunctionCallbackArguments,
+                                 _rv: v8::ReturnValue| {
+                                    let state = WorkerState::get_from_isolate(scope);
+                                    state.tick_monitoring(); // the cpu task is done. nice!
+
+                                    let replier = unsafe {
+                                        &mut *(args.data().cast::<External>().value()
+                                            as *mut Option<oneshot::Sender<String>>)
+                                    };
+
+                                    if let Some(replier) = replier.take() {
+                                        println!("replier is still present, sending");
+                                        replier.send(args.get(0).to_rust_string_lossy(scope)).ok();
+                                    }
+                                },
+                            )
+                            .data(
+                                External::new(
+                                    try_catch,
+                                    replier_ptr as *mut c_void
+                                )
+                                .cast()
+                            )
+                            .build(try_catch)
+                        ),
+                    );
                 }
             }
         }
